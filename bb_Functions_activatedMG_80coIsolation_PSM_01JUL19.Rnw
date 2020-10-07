@@ -1,0 +1,937 @@
+\documentclass[a4paper]{article}
+\usepackage{Sweave}
+\begin{document}
+
+\title{}
+\author{}
+
+\maketitle
+
+<<label=functions, echo=FALSE, eval=TRUE>>=
+str2vect <- function(y, split, type='') {
+    # split: eg ';'                                                                                                                                     
+    # type: str, int, num                                                                                                                               
+    if (type=='int') return(as.integer(unlist(strsplit(y, split=split))))
+    if(type=='num') return(as.numeric(unlist(strsplit(y, split=split))))
+    return(as.character(unlist(strsplit(y, split=split))))
+}
+
+prepareAnnot <- function(df, pix, mix) {
+    pix <- as.integer(pix)
+    mix <- as.integer(mix)
+    annot.df <- df[, c(pix, mix)]; colnames(annot.df) <- c('PepSeq', 'UniProt')
+
+    up.ix  <- grep(';', annot.df$UniProt)
+    up <- as.character(sapply(annot.df$UniProt[up.ix], function(x) str2vect(x, '; ')[1]))
+    annot.df$UniProt[up.ix] <- up
+    annot.df <- annot.df[!is.na(annot.df$UniProt), ]
+    
+    return(annot.df)
+}
+
+myROTSsummary <- function (object, fdr = NULL, num.genes = NULL) {
+    if (!is.null(fdr) || !is.null(num.genes)) {
+        sorted.rots <- abs(object$d)
+        names(sorted.rots) <- rownames(object$data)
+        sorted.rots <- sort(sorted.rots, decreasing = TRUE)
+        
+        names(object$FDR) <- rownames(object$data)
+        names(object$d) <- rownames(object$data)
+        names(object$pvalue) <- rownames(object$data)
+        names(object$logfc) <- rownames(object$data)
+        
+        result <- numeric(0)
+        result <- cbind(match(names(sorted.rots), rownames(object$data)), 
+                        object$d[names(sorted.rots)], object$pvalue[names(sorted.rots)], 
+                        object$FDR[names(sorted.rots)], object$logfc[names(sorted.rots)])
+        colnames(result) <- c("Row", "ROTS-statistic", "pvalue", "FDR", 'logFC')
+
+        if (!is.null(fdr)) 
+            result <- result[result[, 4] <= fdr, , drop = FALSE]
+        else result <- result[1:min(num.genes, nrow(result)), , drop = FALSE]
+        
+        return(result)
+    }
+}
+
+prepareData_PDPSM <- function(df, peptix, contaminantix, fileIDix, isolinterfix, startix, endix) {
+    filterContaminant <- function(adf, ix) {
+        ix <- as.integer(ix)
+        contaminant <- adf[, ix]
+        contaminant <- as.logical(toupper(contaminant))
+        adf <- adf[!contaminant, ]
+        return(adf)
+    }
+    filterIsolationInterference <- function(adf, ix) {
+        # D040219 - remove rows with missing interference percentage
+        ix <- as.integer(ix)
+        isolinterf <- adf[, ix]
+        adf <- adf[isolinterf < 40.0 & !is.na(isolinterf), ]
+        return(adf)
+    }
+    filterCarrierEmptyChannels <- function(adf, carrier, empty) {
+        cix <- grep(paste(carrier, empty, sep='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    rmEmptyRows <- function(df) {
+        doremove <- apply(df, 1, function(x) all(is.na(x)))
+        
+        return(df[!doremove, ])
+    }
+    clearColumnNames <- function(df) {
+        cn  <-  colnames(df)
+        cn <- sub('\\.*$', '', colnames(df))
+        colnames(df) <- cn
+        
+        return(df)
+    }
+    df <- clearColumnNames(df) 
+    #df <- filterContaminant(df, contaminantix) # for slides # 050519
+    #df <- filterIsolationInterference(df, isolinterfix) # for slides # 050619
+
+    peptix <- as.integer(peptix)
+    fileIDix <- as.integer(fileIDix)
+    startix <- as.integer(startix)
+    endix <- as.integer(endix)
+    df <- df[, c(peptix, fileIDix, startix:endix)]    
+    
+    df <- filterCarrierEmptyChannels(df, '126', '127')
+    
+    colnames(df)[1] <- 'PepSeq'
+    
+    return(df)
+}
+
+prepareData_TS_PDPSM_v0 <- function(df, peptix, fileIDix, isolinterfix, lessperc, startix, endix) { # TS: Targeted and SCOPED
+    # lessperc: float for setting coisolation interference threshold
+    filterIsolationInterference <- function(adf, ix, perc) {
+        # D040219 - remove rows with missing interference percentage
+        perc <- as.numeric(perc)
+        ix <- as.integer(ix)
+        isolinterf <- adf[, ix]
+        adf <- adf[isolinterf < perc & !is.na(isolinterf), ]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v0 <- function(adf, carrier, empty) {
+        cix <- grep(paste(carrier, empty, sep='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels <- function(adf, carrierORempty, ...) {
+        alst <- list(...)
+        carrierORempty <- c(carrierORempty, unlist(alst))
+        cix <- grep(paste(carrierORempty, collapse='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    rmEmptyRows <- function(df) {
+        emptyrows <- apply(df, 1, function(x) all(is.na(x)))
+        
+        return(df[!emptyrows, ])
+    }
+    cleanColumnNames <- function(df) {
+        cn  <-  colnames(df)
+        cn <- sub('Abundance\\.\\.', '_', colnames(df))
+        colnames(df) <- cn
+        
+        return(df)
+    }
+    df <- cleanColumnNames(df) 
+    df <- filterIsolationInterference(df, isolinterfix, lessperc)
+
+    peptix <- as.integer(peptix)
+    fileIDix <- as.integer(fileIDix)
+    startix <- as.integer(startix)
+    endix <- as.integer(endix)
+    df <- df[, c(peptix, fileIDix, startix:endix)]    
+    
+    # CAREFUL - this should be moved into the argument list!
+    df <- filterCarrierEmptyChannels(df, '126', '127')
+    
+    colnames(df)[1] <- 'PepSeq'
+    
+    return(df)
+}
+
+prepareData_TS_PDPSM <- function(df, peptix, fileIDix, isolinterfix, lessperc, startix, endix) { # TS: Targeted and SCOPED
+    # lessperc: float for setting coisolation interference threshold
+    filterIsolationInterference <- function(adf, ix, perc) {
+        # D040219 - remove rows with missing interference percentage
+        perc <- as.numeric(perc)
+        ix <- as.integer(ix)
+        isolinterf <- adf[, ix]
+        adf <- adf[isolinterf < perc & !is.na(isolinterf), ]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v0 <- function(adf, carrier, empty) {
+        cix <- grep(paste(carrier, empty, sep='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels <- function(adf, carrierORempty, ...) {
+        alst <- list(...)
+        carrierORempty <- c(carrierORempty, unlist(alst))
+        cix <- grep(paste(carrierORempty, collapse='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    rmEmptyRows <- function(df) {
+        emptyrows <- apply(df, 1, function(x) all(is.na(x)))
+        
+        return(df[!emptyrows, ])
+    }
+    cleanColumnNames <- function(df) {
+        cn  <-  colnames(df)
+        cn <- sub('Abundance\\.\\.', '_', colnames(df))
+        colnames(df) <- cn
+        
+        return(df)
+    }
+    rmPeptInMultipleProt  <- function(df) {
+        return(df[df$'X..Proteins' == 1, ])
+    }
+    df <- cleanColumnNames(df) 
+    df <- filterIsolationInterference(df, isolinterfix, lessperc)
+    df <- rmPeptInMultipleProt(df)
+
+    peptix <- as.integer(peptix)
+    fileIDix <- as.integer(fileIDix)
+    startix <- as.integer(startix)
+    endix <- as.integer(endix)
+    df <- df[, c(peptix, fileIDix, startix:endix)]    
+    
+    # CAREFUL - this should be moved into the argument list!
+    df <- filterCarrierEmptyChannels(df, '126', '127')
+    
+    colnames(df)[1] <- 'PepSeq'
+    
+    return(df)
+}
+
+separateAndMerge_PDPSM <- function(df, runix) {
+    rmSparseCells <- function(x) { # same purpose as keepPept_cols()
+        # remove cells with more than 50% missing
+        a <- x[-1]
+        b <- apply(a, 2, function(y) {
+            sum(is.na(y))/length(y)*100 < 10.0
+        })
+        return(x[, c(TRUE, b)])
+    }
+    runix <- as.integer(runix)
+    splt.lst <- split(df, factor(df[, runix, drop=TRUE]))
+    
+    splt.lst <- lapply(splt.lst, function(x) {
+        prefix <- unique(x[, runix, drop=TRUE])
+        abundix <- grep('[[:digit:]]', colnames(x))
+        colnames(x)[abundix] <- paste(prefix, colnames(x)[abundix], sep='')
+        colnames(x)[abundix] <- sub('Abundance\\.\\.', '', colnames(x)[abundix])
+        x <- x[-runix]
+    })
+    
+    # ... and merge
+    lst <- splt.lst
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=TRUE), lst[1:2])
+    df <- aggregate(df[-1], df[1], max)
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=TRUE),  list(df, lst[[i]]))
+        df <- aggregate(df[-1], df[1], max)
+    }
+    
+    return(df)
+}
+
+separate_PDPSM <- function(df, runix) {
+    runix <- as.integer(runix)
+    splt.lst <- split(df, factor(df[, runix, drop=TRUE]))
+    
+    splt.lst <- lapply(splt.lst, function(x) {
+        prefix <- unique(x[, runix, drop=TRUE])
+        abundix <- grep('[[:digit:]]', colnames(x))
+        colnames(x)[abundix] <- paste(prefix, colnames(x)[abundix], sep='')
+        colnames(x)[abundix] <- sub('Abundance\\.\\.', '', colnames(x)[abundix])
+        x <- x[-runix]
+    })
+    
+    return(splt.lst)
+}
+
+# D062019 D112219 - temporary modified
+andMerge_PDPSM <- function(lst) {
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE), lst[1:2])
+    df <- aggregate(df[-1], df[1], max)
+    return(df)
+    df <- aggregate(. ~ df$PepSeq, data=df, max, na.action=na.omit)
+    df <- df[-1]
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
+        #df <- aggregate(df[-1], df[1], max)
+        df <- aggregate(. ~ df$PepSeq, data=df, max, na.action=na.omit)
+        df <- df[-1]
+    }
+    
+    return(df)
+}
+
+# this works
+andMerge_PDPSM_vSum <- function(lst) {
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE), lst[1:2])
+    df <- aggregate(. ~ PepSeq, data=df, sum, na.action=na.omit) # D070319 modified max -> sum
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
+        df <- aggregate(. ~ PepSeq, data=df, sum, na.action=na.omit) # D070319 modified max -> sum
+    }
+    
+    return(df)
+}
+
+prepPhenoData_PDPSM <- function(df, type, suff) {
+    # type: 4x4, 2x2
+    df$PepSeq  <- make.unique(df$PepSeq)
+    df <- df[order(df$PepSeq, decreasing=FALSE), ]
+
+    fdf <- data.frame(ID=df$PepSeq, Acc=df$PepSeq)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$PepSeq
+    bm <- df[-1]
+    bm[colnames(bm)] <- sapply(bm[colnames(bm)], as.numeric)
+    bm  <-  as.matrix(bm)
+
+    if (type == '4x4') {
+        pat0 <- paste(c('128', '129'), collapse='|')
+        pat1 <- paste(c('130', '131'), collapse='|')
+    } else if (type == '2x2') {
+        pat0 <- paste(c('128', '130'), collapse='|')
+        pat1 <- paste(c('129', '131'), collapse='|')
+    } else if (type == '1x1') {
+        pat0 <- 'N'
+        pat1 <- 'C'
+    }
+    
+    bm.cnames <- sapply(colnames(bm), function(x) {
+        if (grepl(pat0, x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(pat1, x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+makeMSS_PDPSM_v1 <- function(lst, sfx) {
+    pd <- read.csv(paste('pData_', sfx, '.txt', sep=''))
+    mss <- MSnSet(lst[[1]], lst[[2]], pd)
+    
+    return(mss)
+}
+
+keepPept <- function(ms, percNA) {
+    perc <- as.numeric(percNA)/100.0
+    kp <- apply(exprs(ms), 1, function(x) sum(is.na(x)) < length(x)*perc)
+    return(ms[kp, ])
+}
+
+keepCells <- function(ms, percNA) { # columns
+    perc <- as.numeric(percNA)/100.0
+    kp <- apply(exprs(ms), 2, function(x) sum(is.na(x)) < length(x)*perc)
+    return(ms[, kp])
+}
+
+doLimitMissing <- function(ms, colperc, rowperc) {
+    mss <- keepPept(ms, rowperc)
+    
+    times  <- 1
+    while (times < 2) {
+        mss <- keepCells(mss, colperc)
+        mss <- keepPept(mss, rowperc)
+        times <- times + 1
+    }
+    
+    return(mss)
+}
+
+rmOutlier_v1 <- function(ms) {
+    outlier <- apply(exprs(ms), 2, function(x) names(boxplot.stats(x)$out))
+    outlier <- unique(as.character(unlist(outlier)))
+    ms <- ms[!featureNames(ms) %in% outlier, ]
+    
+    return(ms)
+}
+
+justOutlier <- function(ms) {
+    outlier <- apply(exprs(ms), 2, function(x) names(boxplot.stats(x)$out))
+    outlier <- unique(as.character(unlist(outlier)))
+    ms <- ms[featureNames(ms) %in% outlier, ]
+    
+    return(ms)
+}
+
+separateAndImpute_PDPSM <- function(ms) {
+    require(pcaMethods)
+    ms0  <- ms[, ms$TreatmentGroup==0]
+    val0 <- c(exprs(ms0))
+    percimp0 <- sum(is.na(val0))/length(val0)*100
+    exprs(ms0) <- completeObs(pca(exprs(ms0), method='bpca', nPcs=ncol(ms0)-1))
+    
+    ms1 <- ms[, ms$TreatmentGroup==1]
+    val1 <- c(exprs(ms1))
+    percimp1 <- (sum(is.na(val1))/length(val1))*100
+    exprs(ms1) <- completeObs(pca(exprs(ms1), method='bpca', nPcs=ncol(ms1)-1))
+    
+    return(list(combine(ms0, ms1), percimp0, percimp1))
+}
+
+#######################
+prepareData_TS_PDPSM_v0 <- function(df, peptix, fileIDix, isolinterfix, startix, endix) { # TS: Targeted and SCOPED
+    filterIsolationInterference <- function(adf, ix) {
+        # D040219 - remove rows with missing interference percentage
+        ix <- as.integer(ix)
+        isolinterf <- adf[, ix]
+        adf <- adf[isolinterf < 40.0 & !is.na(isolinterf), ]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v0 <- function(adf, carrier, empty) {
+        cix <- grep(paste(carrier, empty, sep='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels <- function(adf, carrierORempty, ...) {
+        alst <- list(...)
+        carrierORempty <- c(carrierORempty, unlist(alst))
+        cix <- grep(paste(carrierORempty, collapse='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    rmEmptyRows <- function(df) {
+        emptyrows <- apply(df, 1, function(x) all(is.na(x)))
+        
+        return(df[!emptyrows, ])
+    }
+    clearColumnNames <- function(df) {
+        cn  <-  colnames(df)
+        cn <- sub('\\.*$', '', colnames(df))
+        colnames(df) <- cn
+        
+        return(df)
+    }
+    df <- clearColumnNames(df) 
+    df <- filterIsolationInterference(df, isolinterfix)
+
+    peptix <- as.integer(peptix)
+    fileIDix <- as.integer(fileIDix)
+    startix <- as.integer(startix)
+    endix <- as.integer(endix)
+    df <- df[, c(peptix, fileIDix, startix:endix)]    
+    
+    # CAREFUL - this should be moved into the argument list! 05/13/19
+    df <- filterCarrierEmptyChannels(df, '126', '127', '131N')
+    
+    colnames(df)[1] <- 'PepSeq'
+    
+    return(df)
+}
+
+################### unknow types or random ###############################################################
+
+prepPheno_unknwnType_PDPSM <- function(df, suff) {
+    df$PepSeq  <- make.unique(df$PepSeq)
+    df <- df[order(df$PepSeq, decreasing=FALSE), ]
+
+    fdf <- data.frame(ID=df$PepSeq, Acc=df$PepSeq)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$PepSeq
+    bm <- as.matrix(df[-1])
+
+    original <- FALSE # 05/13/19
+    if (original) {
+        pat <- paste(c('128', '129', '130', '131'), collapse='|')
+        bm.cnames <- sapply(colnames(bm), function(x) if (grepl(pat, x)) x <- paste(x, '0', sep=','))
+    } else {
+        bm.cnames <- sapply(colnames(bm), function(x) x <- paste(x, '0', sep=','))
+    }
+
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+makeMSS_unknwnType_PDPSM <- function(df, sfx) {
+    lst <- prepPheno_unknwnType_PDPSM(df, sfx)
+    pd <- read.csv(paste('pData_', sfx, '.txt', sep=''))
+    mss <- MSnSet(lst[[1]], lst[[2]], pd)
+    
+    return(mss)
+}
+
+makeMSS_unknwnType_PDPSM_v1 <- function(lst, sfx) {
+    pd <- read.csv(paste('pData_', sfx, '.txt', sep=''))
+    mss <- MSnSet(lst[[1]], lst[[2]], pd)
+    
+    return(mss)
+}
+
+makeMSS_ManualType_PDPSM <- function(df, pdfile, sfx) {
+    lst <- prepPheno_unknwnType_PDPSM(df, sfx)
+    mpd <- read.csv(pdfile)
+    pd <- read.csv(paste('pData_', sfx, '.txt', sep=''))
+    ix  <- match(rownames(pd), rownames(mpd))
+    mss <- MSnSet(lst[[1]], lst[[2]], mpd[ix,, drop=FALSE])
+    
+    return(mss)
+}
+
+separateAndImpute_unknownType_PDPSM <- function(ms) {
+    require(pcaMethods)
+    abundval <- c(exprs(ms))
+    percimp <- sum(is.na(abundval))/length(abundval)*100
+    message(paste(percimp, '% imputed', sep=''))
+    #exprs(ms) <- completeObs(pca(exprs(ms), method='bpca', nPcs=ncol(ms)-1))
+    exprs(ms) <- completeObs(pca(exprs(ms), method='bpca', nPcs=5), center=FALSE) # center.mean normalization was done before
+    
+    return(list(ms, round(percimp, 2)))
+}
+
+
+mergeAllImputeProcess_unknwnType_PDPSM <- function(lst, sfx, doImpute=FALSE, dormOutlier=FALSE, manualAssign=NULL) {
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=TRUE), lst[1:2])
+    df <- aggregate(df[-1], df[1], max)
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=TRUE),  list(df, lst[[i]]))
+        df <- aggregate(df[-1], df[1], max)
+    }
+
+    if (is.null(manualAssign)) {
+        mss <- makeMSS_unknwnType_PDPSM(df, sfx)
+    } else {
+        message('...Here now!')
+        mss <- makeMSS_ManualType_PDPSM(df, manualAssign, sfx)
+    }
+
+    mss <- keepPept(mss, 30)
+    mss <- keepCells(mss, 30)
+
+    if (dormOutlier) mss <- rmOutlier_v1(mss)
+
+    if (doImpute) {
+        mss <- logTransformWithMissing(mss)
+        mss <- normalise_MSnSet(mss, method='center.mean')
+        alist <- separateAndImpute_unknownType_PDPSM(mss)
+        return(alist)
+    }
+    
+    return(mss)
+}
+
+rmCompPCA <- function(X, rm=1) {
+    # remove principal componenet, rm=1: remove 1st component
+    rm <- as.integer(rm)
+    
+    mu <- colMeans(X)
+
+    Xpca <- prcomp(X) # center=TRUE by default
+    rot <- Xpca$rotation
+    retx <- Xpca$x
+
+    Xhat = retx[,seq(ncol(retx))[-rm]] %*% t(rot[,seq(ncol(rot))[-rm]])
+    Xhat = scale(Xhat, center = -mu, scale = FALSE)
+    
+    return(Xhat)
+}
+
+rmMultCompPCA <- function(X, rm=1, ...) {
+    # remove principal componenet, rm=1: remove 1st component
+    # X: matrix
+    rm <- as.integer(rm)
+    rmlist <- list(...)
+    rm  <- c(rm, unlist(rmlist))
+    
+    mu <- colMeans(X)
+
+    Xpca <- prcomp(X) # center=TRUE by default
+    rot <- Xpca$rotation
+    retx <- Xpca$x
+
+    Xhat = retx[,seq(ncol(retx))[-rm]] %*% t(rot[,seq(ncol(rot))[-rm]])
+    Xhat = scale(Xhat, center = -mu, scale = FALSE)
+    
+    return(Xhat)
+}
+
+plotPCA_sc_unknwn <- function(m) {
+    random <- FALSE
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:4])
+    df <- namerows(df, col.name='Samples')
+
+    if (random) {
+        df$Samples <- rep('Var', nrow(df))
+    } else {
+        df$Samples <- ifelse(grepl('128|129', df$Sample), 'J', 'U')
+    }
+
+    p <- ggplot(df, aes(PC1, PC2, colour=Samples)) + geom_point(size=2)
+    #p <- ggplot(df, aes(PC2, PC3, colour=Samples)) + geom_point(size=2)
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title='Jurkat vs U937')
+    return(p)
+}
+
+plotPCA_sc_manualassign <- function(m, ass) {
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:4])
+    df <- namerows(df, col.name='Samples')
+
+    df$Samples <- ass[names(ass) %in% df$Samples]
+
+    p <- ggplot(df, aes(PC1, PC2, colour=Samples)) + geom_point(size=2)
+    #p <- ggplot(df, aes(PC2, PC3, colour=Samples)) + geom_point(size=2)
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title='Jurkat vs U937')
+    return(p)
+}
+
+
+plotPCA_sc_unknwn_labpts <- function(m) {
+    random <- TRUE
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:4])
+    df <- namerows(df, col.name='Samples')
+
+    if (random) {
+        df$Samples <- rep('Var', nrow(df))
+    } else {
+        df$Samples <- ifelse(grepl('128|129', df$Sample), 'J', 'U')
+    }
+
+    p <- ggplot(df, aes(PC1, PC2, colour=Samples, label=rownames(df))) + geom_point(size=2)
+    #p <- ggplot(df, aes(PC2, PC3, colour=Samples)) + geom_point(size=2)
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title='Jurkat vs U937') + geom_text(size=2.5, colour='blue')
+    return(p)
+}
+
+plotPCA_sc_v1_labpts <- function(m, pdat, title='') {
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:2])
+    df <- namerows(df, col.name='Samples')
+
+    spl <- df$Samples
+    cl <- pdat[match(spl, names(pdat))]
+    spl <- ifelse(cl==0, 'Young', 'Old')
+    df$Samples <- spl
+
+    p <- ggplot(df, aes(PC1, PC2, colour=Samples, label=rownames(df))) + geom_point(size=2)
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title=title) + geom_text(size=2.5, colour='blue', vjust=0, nudge_y=0.004)
+    return(p)
+}
+
+plotPCA_sc_v1_labpts_v1 <- function(m, pdat, title='') { # coloring labels with channel, not quite!
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:2])
+    df <- namerows(df, col.name='Samples')
+
+    spl <- df$Samples
+    cl <- pdat[match(spl, names(pdat))]
+    spl <- ifelse(cl==0, 'Young', 'Old')
+    df$Samples <- spl
+    df$Channel <- sub('.*_', '', rownames(df))
+
+    p <- ggplot(df, aes(PC1, PC2, colour=Channel, label=rownames(df))) + geom_point(size=2)
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title=title)# + geom_text(size=2.5, colour='blue', vjust=0, nudge_y=0.004)
+    
+    return(p)
+}
+
+plotPCA_sc_v2 <- function(m, pdat, component, title='') { # select components
+    # component: either 1 (comp1vscomp2) or 2 (comp2vscomp3)
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:4])
+    df <- namerows(df, col.name='Samples')
+
+    spl <- df$Samples
+    cl <- pdat[match(spl, names(pdat))]
+    spl <- ifelse(cl==1, 'Young', 'Old')
+    df$Samples <- spl
+
+    if (component=='1') { 
+        p <- ggplot(df, aes(PC1, PC2, colour=Samples)) + geom_point(size=2)
+    } else if (component=='2') {
+        p <- ggplot(df, aes(PC2, PC3, colour=Samples)) + geom_point(size=2)
+        #p <- ggplot(df, aes(PC3, PC4, colour=Samples)) + geom_point(size=2)
+    }
+    
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title=title)
+    
+    return(p)
+}
+
+plotPCA_sc_ptshape <- function(m, pdat, component, title='') { # select components
+    # component: either 1 (comp1vscomp2) or 2 (comp2vscomp3)
+    pca <- prcomp(m, scale=TRUE)
+    df <- as.data.frame(pca$rotation[, 1:4])
+    df <- namerows(df, col.name='Samples')
+
+    repl <- spl <- df$Samples
+
+    cl <- pdat[match(spl, names(pdat))]
+    spl <- ifelse(cl==1, 'Young', 'Old')
+    df$Samples <- spl
+    
+    repl <- sub('_.*', '', repl)
+    df$Replicate <- ifelse(grepl(paste(paste('F', seq(12), sep=''), collapse='$|'), repl), 'Plate13',
+                    ifelse(grepl(paste(paste('F', seq(25, 36), sep=''), collapse='$|'), repl), 'Plate15',
+                    ifelse(grepl(paste(paste('F', seq(13, 24), sep=''), collapse='$|'), repl), 'Plaste14', 'Do not know')))
+
+    if (component=='1') { 
+        p <- ggplot(df, aes(PC1, PC2, colour=Samples, shape=Replicate)) + geom_point(size=2)
+    } else if (component=='2') {
+        p <- ggplot(df, aes(PC2, PC3, colour=Samples)) + geom_point(size=2)
+        #p <- ggplot(df, aes(PC3, PC4, colour=Samples)) + geom_point(size=2)
+    }
+    
+    p <- p + theme(legend.position='right', legend.title=element_blank())
+    p <- p + labs(title=title)
+    
+    return(p)
+}
+
+####################################################
+setRowZero <- function(m) {
+    iszero <- apply(m, 1, function(x) all(is.na(x)))
+    m[iszero, ]  <- 0
+        
+    return(m)
+}
+
+colReplaceMissingWithRandNorm <- function(m) {
+    res <- apply(m, 2, function(x) {
+        if (sum(is.na(x)) < 0.5 * length(x)) {
+            numbermissing <- sum(is.na(x))
+            #x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=sd(x[!is.na(x)]))
+            x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=mean(x[!is.na(x)])/3)
+            return(x)
+        } else {
+            return(x)
+        }
+    })
+
+    return(res)
+}
+
+rowReplaceMissingWithRandNorm <- function(m) {
+    res <- apply(m, 1, function(x) {
+        if (sum(is.na(x)) < 0.5 * length(x)) {
+            numbermissing <- sum(is.na(x))
+            #x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=sd(x[!is.na(x)]))
+            x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=mean(x[!is.na(x)])/3)
+            return(x)
+        } else {
+            return(x)
+        }
+    })
+
+    return(t(res))
+
+}
+
+procProteinPSMs <- function(m) { # D070119
+    # make fillColWithMean() and fillRowWithAlmostFull() redundant
+    # using column means or row means to replace missing but only if enough abundance values to calculate mean
+    if (!anyNA(m)) return(m)
+
+    xpept <- unique(sub(';.*', '', rownames(m)))
+    pept <- gsub('.*\\]\\.', '', xpept)
+    pept <- gsub('\\[.*', '', pept)
+
+    alst <- lapply(pept, function(x) { # protein specific PSM matrix
+        df <- as.data.frame(m)
+        obj <- df[grep(x, rownames(df), fixed=TRUE), ]
+        obj <- as.matrix(obj)
+    })
+
+    blst <- lapply(alst, function(obj) {
+        mm <- as.matrix(obj)
+        if (anyNA(mm)) {
+            if (nrow(mm) == 1) {
+                mm <- rowReplaceMissingWithRandNorm(mm)
+                return(mm)
+            } else {
+                mm <- colReplaceMissingWithRandNorm(mm)
+                mm <- rowReplaceMissingWithRandNorm(mm)
+                return(mm)
+            }
+        } else {
+            return(mm)
+        }
+    })
+
+    return(do.call(rbind, blst))
+}
+
+############# main function ###########################
+imputeMissing <- function(df, colxstart, colxend, prot) {
+    require(pcaMethods)
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    write.table(am, file='IntermRes/am_testing.txt', quote=FALSE, sep='\t')
+
+    message('              proc a.am')
+    am <- procProteinPSMs(am)
+    write.table(am, file='IntermRes/a.am_testing.txt', quote=FALSE, sep='\t')
+    message('              proc b.am')
+    am <- setRowZero(am)
+    write.table(am, file='IntermRes/b.am_testing.txt', quote=FALSE, sep='\t')
+    
+    return(am)
+}
+
+imputeMissing_withplotting <- function(df, colxstart, colxend, prot) {
+    require(pcaMethods)
+    doPlot <- function(m, type='full', col='black') {
+        # type: full or line
+        amv <- c(am)
+        amv <- amv[!is.na(amv)]
+        if (type == 'full') {
+            plot(density(amv))
+        } else {
+            lines(density(amv), col=col)
+        }
+    }
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    doPlot(am)
+
+    if (nrow(am) > 2) {
+        am <- procProteinPSMs(am)
+        am <- setRowZero(am)
+        doPlot(am, type='line', col='blue')
+        am <- fillColWithMean(am)
+        doPlot(am, type='line', col='green')
+        
+        if (anyNA(am)) {
+            #ami <- completeObs(pca(am, method='bpca', nPcs=ncol(am)-1, scale='vector'))
+            ami <- completeObs(pca(am, method='bpca'))
+            doPlot(ami, type='line', col='red')
+            Sys.sleep(3)
+            return(ami)
+        } else {
+            return(am)
+        }
+    }
+    
+    return(am)
+}
+    
+checkMissingPerRun <- function(df) {
+    run <- sub('_.*', '_', colnames(df))
+    run <- run[-1] # rm PepSeq col
+    #run <- unique(run)
+    
+    missing <- sapply(run, function(x) {
+        xdf  <- df[, grep(x, colnames(df))]
+        sum(is.na(xdf))
+    })
+    
+    return(missing)
+}
+rmRunZeroMissing <- function(df, rmix, ...) {
+    # rmix and ...: integers
+    rmx <- unlist(list(rmix, ...))
+    rmx <- as.integer(rmx)
+    rmr <- paste(paste('F', rmx, '_', sep=''), collapse='|')
+    
+    xdf <- df[, -grep(rmr, colnames(df))]
+    xdf[is.na(xdf)] <- 0
+    
+    return(xdf)
+}
+
+prepDEdata <- function(rots, plate.cb, mss) {
+    df1 <- as.data.frame(myROTSsummary(rots, fdr=1))
+    df1$Uniprot <- as.character(unlist(mget(rownames(df1), psmMkNames2uniprotAMG, ifnotfound=rownames(df1))))
+    df01 <- df1[df1$FDR <= 0.1, ]
+    df01$Symbol <- as.character(unlist(mget(df01$Uniprot, uniprotAMG2symbol, ifnotfound=df01$Uniprot)))
+    df01 <- df01[-c(1, 2)]
+
+    deP13.df <- plate.cb[rownames(plate.cb) %in% rownames(df01), ]
+    pd <- phenoData(mss)$TreatmentGroup
+    a <- apply(deP13.df, 1, function(x) {
+        ym <- inv.glog2(mean(x[which(pd==0)]))
+        om <- inv.glog2(mean(x[which(pd==1)]))
+        return(ym/om)
+    })
+    
+    a.df <- as.data.frame(a)
+
+    final.df <- merge(df01, a.df, by=0)
+    final.df$invGLOG <- inv.glog2(final.df$logFC)
+    final.df <- final.df[-1]
+    colnames(final.df)  <- c('pvalue', 'FDR', 'logFC', 'Uniprot', 'Symbol', 'FC', 'FCx')
+    
+    return(final.df[-7])
+}
+
+plotSIMLRclusters <- function(obj, main='') {
+    # obj: SIMLR object
+    col <- ifelse(obj$y$cluster==1, 'red', ifelse(obj$y$cluster==2, 'blue',
+                                                     ifelse(obj$y$cluster==3, 'green',
+                                                     ifelse(obj$y$cluster==4, 'yellow',
+                                                     ifelse(obj$y$cluster==5, 'magenta',
+                                                     ifelse(obj$y$cluster==6, 'turquoise',
+                                                     ifelse(obj$y$cluster==7, 'sienna',
+                                                     ifelse(obj$y$cluster==8, 'olivedrab',
+                                                     ifelse(obj$y$cluster==9, 'lightsteelblue1', 'black')))))))))
+    #'orchid', 'lavender', 'lawngreen', 'sienna'
+    #opar <- par(bg='grey80')
+    opar <- par(bg='grey90')
+    plot(obj$ydata, col=col, xlab = "SIMLR component 1", ylab = "SIMLR component 2", pch=20,  cex=0.7, main=main)
+    grid(col='blue', nx=12, ny=12)
+    par(opar)
+}
+
+plotSIMLRclusters_groupmarked <- function(obj, pd, main='') {
+    # obj: SIMLR object
+    col <- ifelse(obj$y$cluster==1, 'red', ifelse(obj$y$cluster==2, 'blue',
+                                                     ifelse(obj$y$cluster==3, 'green',
+                                                     ifelse(obj$y$cluster==4, 'sienna',
+                                                     ifelse(obj$y$cluster==5, 'magenta',
+                                                     ifelse(obj$y$cluster==6, 'turquoise',
+                                                     ifelse(obj$y$cluster==7, 'yellow',
+                                                     ifelse(obj$y$cluster==8, 'olivedrab',
+                                                     ifelse(obj$y$cluster==9, 'lightsteelblue1', 'black')))))))))
+    #'orchid', 'lavender', 'lawngreen', 'sienna'
+    #opar <- par(bg='grey80')
+    #opar <- par(bg='grey90')
+    plot(obj$ydata, col=col, xlab = "SIMLR component 1", ylab = "SIMLR component 2", pch=ifelse(pd==1, 20, 23),  cex=0.7, main=main)
+    #grid(col='blue', nx=12, ny=12)
+    #par(opar)
+}
+
+
+@ 
+
+\end{document}
