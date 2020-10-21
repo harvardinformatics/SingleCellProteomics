@@ -1,0 +1,681 @@
+\documentclass[a4paper]{article}
+\usepackage{Sweave}
+\begin{document}
+
+\title{}
+\author{}
+
+\maketitle
+
+<<label=functions, echo=FALSE, eval=TRUE>>=
+str2vect <- function(y, split, type='') {
+    # split: eg ';'                                                                                                                                     
+    # type: str, int, num                                                                                                                               
+    if (type=='int') return(as.integer(unlist(strsplit(y, split=split))))
+    if(type=='num') return(as.numeric(unlist(strsplit(y, split=split))))
+    return(as.character(unlist(strsplit(y, split=split))))
+}
+
+prepareAnnot <- function(df, pix, mix) {
+    pix <- as.integer(pix)
+    mix <- as.integer(mix)
+    annot.df <- df[, c(pix, mix)]; colnames(annot.df) <- c('PepSeq', 'UniProt')
+
+    up.ix  <- grep(';', annot.df$UniProt)
+    up <- as.character(sapply(annot.df$UniProt[up.ix], function(x) str2vect(x, '; ')[1]))
+    annot.df$UniProt[up.ix] <- up
+    annot.df <- annot.df[!is.na(annot.df$UniProt), ]
+    
+    return(annot.df)
+}
+
+separate_PDPSM <- function(df, runix) {
+    runix <- as.integer(runix)
+    splt.lst <- split(df, factor(df[, runix, drop=TRUE]))
+    
+    splt.lst <- lapply(splt.lst, function(x) {
+        prefix <- unique(x[, runix, drop=TRUE])
+        abundix <- grep('[[:digit:]]', colnames(x))
+        colnames(x)[abundix] <- paste(prefix, colnames(x)[abundix], sep='')
+        colnames(x)[abundix] <- sub('Abundance\\.\\.', '', colnames(x)[abundix])
+        x <- x[-runix]
+    })
+    
+    return(splt.lst)
+}
+
+colReplaceMissingWithRandNorm <- function(m) {
+    res <- apply(m, 2, function(x) {
+        if (sum(is.na(x)) < 0.5 * length(x)) {
+            numbermissing <- sum(is.na(x))
+            #x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=sd(x[!is.na(x)]))
+            x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=mean(x[!is.na(x)])/3)
+            return(x)
+        } else {
+            return(x)
+        }
+    })
+
+    return(res)
+}
+
+rowReplaceMissingWithRandNorm <- function(m) {
+    res <- apply(m, 1, function(x) {
+        if (sum(is.na(x)) < 0.5 * length(x)) {
+            numbermissing <- sum(is.na(x))
+            #x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=sd(x[!is.na(x)]))
+            x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=mean(x[!is.na(x)])/3)
+            return(x)
+        } else {
+            return(x)
+        }
+    })
+
+    return(t(res))
+
+}
+
+procProteinPSMs <- function(m) { # D070119
+    # make fillColWithMean() and fillRowWithAlmostFull() redundant
+    # using column means or row means to replace missing but only if enough abundance values to calculate mean
+    if (!anyNA(m)) return(m)
+
+    xpept <- unique(sub(';.*', '', rownames(m)))
+    pept <- gsub('.*\\]\\.', '', xpept)
+    pept <- gsub('\\.\\[.*', '', pept)
+
+    alst <- lapply(pept, function(x) { # protein specific PSM matrix
+        df <- as.data.frame(m)
+        obj <- df[grep(x, rownames(df), fixed=TRUE), ]
+        obj <- as.matrix(obj)
+    })
+
+    blst <- lapply(alst, function(obj) {
+        mm <- as.matrix(obj)
+        if (anyNA(mm)) {
+            if (nrow(mm) == 1) {
+                mm <- rowReplaceMissingWithRandNorm(mm)
+                return(mm)
+            } else {
+                mm <- colReplaceMissingWithRandNorm(mm)
+                mm <- rowReplaceMissingWithRandNorm(mm)
+                return(mm)
+            }
+        } else {
+            return(mm)
+        }
+    })
+
+    return(do.call(rbind, blst))
+}
+
+setRowZero <- function(m) {
+    iszero <- apply(m, 1, function(x) all(is.na(x)))
+    m[iszero, ]  <- 0
+        
+    return(m)
+}
+
+imputeMissing <- function(df, colxstart, colxend, prot) {
+    require(pcaMethods)
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    write.table(am, file='IntermRes/am_testing.txt', quote=FALSE, sep='\t')
+
+    message('              proc a.am')
+    am <- procProteinPSMs(am)
+    write.table(am, file='IntermRes/a.am_testing.txt', quote=FALSE, sep='\t')
+    message('              proc b.am')
+    am <- setRowZero(am)
+    write.table(am, file='IntermRes/b.am_testing.txt', quote=FALSE, sep='\t')
+    
+    return(am)
+}
+
+setRowZero_mod011420 <- function(m) {
+    iszero <- apply(m, 1, function(x) any(is.na(x)))
+    m[iszero, ]  <- 0
+        
+    return(m)
+}
+
+procProteinPSMs_mod011420 <- function(m) { 
+    # using column means or row means to replace missing but only if enough abundance values to calculate mean
+    # take the whole matrix
+    if (!anyNA(m)) return(m)
+
+    mm <- as.matrix(m)
+    if (nrow(mm) == 1) {
+        mm <- rowReplaceMissingWithRandNorm(mm)
+        return(mm)
+    } else {
+        mm <- colReplaceMissingWithRandNorm(mm)
+        mm <- rowReplaceMissingWithRandNorm(mm)
+        return(mm)
+    }
+}
+
+imputeMissing_mod011420 <- function(df, colxstart, colxend, prot) {
+    require(pcaMethods)
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    write.table(am, file='IntermRes/am_testing.txt', quote=FALSE, sep='\t')
+
+    message('              proc a.am')
+    am <- procProteinPSMs_mod011420(am)
+    write.table(am, file='IntermRes/a.am_testing.txt', quote=FALSE, sep='\t')
+    message('              proc b.am')
+    am <- setRowZero_mod011420(am)
+    write.table(am, file='IntermRes/b.am_testing.txt', quote=FALSE, sep='\t')
+    
+    return(am)
+}
+
+imputeMissing_withcolixvect <- function(df, ixvect, prot) {
+    require(pcaMethods)
+    ixvect <- as.integer(ixvect)
+    adf <- df[, ixvect]
+    am <- as.matrix(adf)
+    write.table(am, file='IntermRes/am_testing.txt', quote=FALSE, sep='\t')
+
+    message('              proc a.am')
+    am <- procProteinPSMs(am)
+    write.table(am, file='IntermRes/a.am_testing.txt', quote=FALSE, sep='\t')
+    message('              proc b.am')
+    am <- setRowZero(am)
+    write.table(am, file='IntermRes/b.am_testing.txt', quote=FALSE, sep='\t')
+    
+    return(am)
+}
+
+imputeMissing_withcolixvect_v1 <- function(df, ixvect, prot) {
+    require(pcaMethods)
+    ixvect <- as.integer(ixvect)
+    adf <- df[, ixvect]
+    am <- as.matrix(adf)
+    write.table(am, file='IntermRes/am_testing.txt', quote=FALSE, sep='\t')
+
+    message('              proc a.am')
+    am <- procProteinPSMs_mod011420(am)
+    write.table(am, file='IntermRes/a.am_testing.txt', quote=FALSE, sep='\t')
+    message('              proc b.am')
+    am <- setRowZero_mod011420(am)
+    write.table(am, file='IntermRes/b.am_testing.txt', quote=FALSE, sep='\t')
+    
+    return(am)
+}
+
+andMerge_PDPSM <- function(lst) {
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE), lst[1:2])
+    df <- aggregate(. ~ df$PepSeq, data=df, max, na.action=na.omit)
+    df <- df[-1]
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
+        df <- aggregate(. ~ df$PepSeq, data=df, max, na.action=na.omit)
+        df <- df[-1]
+    }
+    
+    return(df)
+}
+
+# D012420
+justMerge_PDPSM <- function(lst) {
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE), lst[1:2])
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
+    }
+    
+    return(df)
+}
+
+# D021820
+prepPhenoData_PDPSM_mod4 <- function(df, type, suff) {
+    # type: 4x4, 2x2
+    df <- df[order(df$PepSeq, decreasing=FALSE), ]
+
+    uprot <- as.character(unlist(mget(df$PepSeq, psmMk2up4, ifnotfound=df$PepSeq)))
+    fdf <- data.frame(ID=df$PepSeq, Acc=uprot)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$PepSeq
+    bm <- df[-1]
+    bm[colnames(bm)] <- sapply(bm[colnames(bm)], as.numeric)
+    bm  <-  as.matrix(bm)
+
+    if (type == '4x4') {
+        pat0 <- paste(c('128', '129'), collapse='|')
+        pat1 <- paste(c('130', '131'), collapse='|')
+    } else if (type == '2x2') {
+        pat0 <- paste(c('128', '130'), collapse='|')
+        pat1 <- paste(c('129', '131'), collapse='|')
+    } else if (type == '1x1') {
+        pat0 <- 'N'
+        pat1 <- 'C'
+    }
+    
+    bm.cnames <- sapply(colnames(bm), function(x) {
+        if (grepl(pat0, x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(pat1, x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+prepPhenoData_PDPSM_mod2 <- function(df, type, suff) {
+    # type: 2x2
+    df <- df[order(df$PepSeq, decreasing=FALSE), ]
+
+    uprot <- as.character(unlist(mget(df$PepSeq, psmMk2up2, ifnotfound=df$PepSeq)))
+    fdf <- data.frame(ID=df$PepSeq, Acc=uprot)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$PepSeq
+    bm <- df[-1]
+    bm[colnames(bm)] <- sapply(bm[colnames(bm)], as.numeric)
+    bm  <-  as.matrix(bm)
+
+    if (type == '4x4') {
+        pat0 <- paste(c('128', '129'), collapse='|')
+        pat1 <- paste(c('130', '131'), collapse='|')
+    } else if (type == '2x2') {
+        pat0 <- paste(c('128', '130'), collapse='|')
+        pat1 <- paste(c('129', '131'), collapse='|')
+    } else if (type == '1x1') {
+        pat0 <- 'N'
+        pat1 <- 'C'
+    }
+    
+    bm.cnames <- sapply(colnames(bm), function(x) {
+        if (grepl(pat0, x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(pat1, x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+prepPhenoData_PDPSM_withlkup <- function(df, type, suff, lkup) {
+    # type: 4x4, 2x2
+    # lkup: psmMk2up4
+    df <- df[order(df$PepSeq, decreasing=FALSE), ]
+
+    uprot <- as.character(unlist(mget(df$PepSeq, lkup, ifnotfound=df$PepSeq)))
+    fdf <- data.frame(ID=df$PepSeq, Acc=uprot)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$PepSeq
+    bm <- df[-1]
+    bm[colnames(bm)] <- sapply(bm[colnames(bm)], as.numeric)
+    bm  <-  as.matrix(bm)
+
+    if (type == '4x4') {
+        pat0 <- paste(c('128', '129'), collapse='|')
+        pat1 <- paste(c('130', '131'), collapse='|')
+    } else if (type == '2x2') {
+        pat0 <- paste(c('128', '130'), collapse='|')
+        pat1 <- paste(c('129', '131'), collapse='|')
+    } else if (type == '1x1') {
+        pat0 <- 'N'
+        pat1 <- 'C'
+    }
+    
+    bm.cnames <- sapply(colnames(bm), function(x) {
+        if (grepl(pat0, x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(pat1, x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+# this works
+andMerge_PDPSM_vSum <- function(lst) {
+    df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE), lst[1:2])
+    df <- aggregate(. ~ PepSeq, data=df, sum, na.action=na.omit) # D070319 modified max -> sum
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
+        df <- aggregate(. ~ PepSeq, data=df, sum, na.action=na.omit) # D070319 modified max -> sum
+    }
+    
+    return(df)
+}
+
+prepPhenoData_PDPSM <- function(df, type, suff) {
+    # type: 4x4, 2x2
+    df$PepSeq  <- make.unique(df$PepSeq)
+    df <- df[order(df$PepSeq, decreasing=FALSE), ]
+
+    fdf <- data.frame(ID=df$PepSeq, Acc=df$PepSeq)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$PepSeq
+    bm <- df[-1]
+    bm[colnames(bm)] <- sapply(bm[colnames(bm)], as.numeric)
+    bm  <-  as.matrix(bm)
+
+    if (type == '4x4') {
+        pat0 <- paste(c('128', '129'), collapse='|')
+        pat1 <- paste(c('130', '131'), collapse='|')
+    } else if (type == '2x2') {
+        pat0 <- paste(c('128', '130'), collapse='|')
+        pat1 <- paste(c('129', '131'), collapse='|')
+    } else if (type == '1x1') {
+        pat0 <- 'N'
+        pat1 <- 'C'
+    }
+    
+    bm.cnames <- sapply(colnames(bm), function(x) {
+        if (grepl(pat0, x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(pat1, x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+rmCompPCA <- function(X, rm=1) {
+    # remove principal componenet, rm=1: remove 1st component
+    rm <- as.integer(rm)
+    
+    mu <- colMeans(X)
+
+    Xpca <- prcomp(X) # center=TRUE by default
+    rot <- Xpca$rotation
+    retx <- Xpca$x
+
+    Xhat = retx[,seq(ncol(retx))[-rm]] %*% t(rot[,seq(ncol(rot))[-rm]])
+    Xhat = scale(Xhat, center = -mu, scale = FALSE)
+    
+    return(Xhat)
+}
+
+normalizeSingleRuns <- function(mss, channels, type='quantiles') {
+    xlst <- sapply(channels, function(x) {
+        xms <- mss[, grep(x, sampleNames(mss))]
+        xms <- normalise(xms, type)
+        return(xms)
+    })
+    
+    nmss <- Reduce(function(x, y) combine(x, y), xlst)
+    return(nmss)
+}
+
+####################################################################### D020520
+replaceByrowBycolWithMean <- function(m) {
+    doReplace <- function(m, mod) {
+        # mod: 1 for rows, 2 for columns
+        mod <- as.integer(mod)
+        res <- apply(m, mod, function(x) {
+            if (!anyNA(x)) {
+                return(x)
+            }
+            else if (sum(is.na(x)) == 1) { # note: this needs to be more specific! D021020
+                x[is.na(x)]  <- mean(x[!is.na(x)])
+                return(x)
+            } else {
+                return(x)
+            }
+        })
+        
+        return(res)
+    }
+    if (anyNA(m)) {
+        mr <- doReplace(m, 1)
+        mr <- t(mr)
+        if (nrow(m) >= 2) {
+            mr <- doReplace(mr, 2)
+        }
+        return(mr)
+    } else {
+        return(m)
+    }
+}
+
+replaceBySampling <- function(m) {
+    if (sum(!is.na(m)) >= 2) {
+        samplefrom <- seq(min(m, na.rm=TRUE), max(m, na.rm=TRUE), length.out=10) # note: what if m has only one row? D021020
+    } else {
+        samplefrom <- NULL
+    }
+
+    xm  <- apply(m, 1, function(x, sel) {
+        nix <- which(is.na(x))
+        
+        if ((length(x) - length(nix)) >= 2) {
+            rowsel <- seq(min(x, na.rm=TRUE), max(x, na.rm=TRUE), length.out=10)
+            x[nix] <- sample(rowsel, length(nix))
+            return(x)
+        } else {
+            if (!is.null(samplefrom)) {
+                x[nix] <- sample(sel, length(nix))
+                return(x)
+            } else {
+                return(x)
+            }
+        }
+    }, samplefrom)
+
+    return(t(xm))
+}
+        
+fillMissing <- function(df, colxstart, colxend, prot) {
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    rownames(am) <- sub('\\.[1-9]+', '', rownames(am))
+    am <- am[!duplicated(rownames(am)),, drop=FALSE]
+
+    if (all(is.na(am))) {
+        return(NULL)
+    }
+    
+    am <- replaceByrowBycolWithMean(am)
+    if (anyNA(am)) {
+        am <- replaceByrowBycolWithMean(am)
+        if (anyNA(am)) {
+            am  <- replaceBySampling(am)
+        }
+    }
+    return(am)
+}
+
+fillMissing_mod040620 <- function(df, colxstart, colxend, prot) {
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    rownames(am) <- sub('\\.[1-9]+', '', rownames(am))
+    am <- am[!duplicated(rownames(am)),, drop=FALSE]
+
+    propmissing <- sum(is.na(am))/length(am)
+    if (propmissing > 0.9) {
+        return(NULL)
+    }
+    
+    am <- replaceByrowBycolWithMean(am)
+    if (anyNA(am)) {
+        am <- replaceByrowBycolWithMean(am)
+        if (anyNA(am)) {
+            am  <- replaceBySampling(am)
+        }
+    }
+    return(am)
+}
+
+fillMissing_ixvector <- function(df, ixvect, prot) {
+    ixvect <- as.integer(ixvect)
+    adf <- df[, ixvect]
+    am <- as.matrix(adf)
+    rownames(am) <- sub('\\.[1-9]+', '', rownames(am))
+    am <- am[!duplicated(rownames(am)),, drop=FALSE]
+
+    if (all(is.na(am))) {
+        return(NULL)
+    }
+    
+    am <- replaceByrowBycolWithMean(am)
+    if (anyNA(am)) {
+        am <- replaceByrowBycolWithMean(am)
+        if (anyNA(am)) {
+            am  <- replaceBySampling(am)
+        }
+    }
+    return(am)
+}
+
+fillMissing_ixvector_mod041120 <- function(df, ixvect, prot) {
+    ixvect <- as.integer(ixvect)
+    adf <- df[, ixvect]
+    am <- as.matrix(adf)
+    rownames(am) <- sub('\\.[1-9]+', '', rownames(am))
+    am <- am[!duplicated(rownames(am)),, drop=FALSE]
+
+    propmissing <- sum(is.na(am))/length(am)
+    if (propmissing > 0.9) {
+        return(NULL)
+    }
+    
+    am <- replaceByrowBycolWithMean(am)
+    if (anyNA(am)) {
+        am <- replaceByrowBycolWithMean(am)
+        if (anyNA(am)) {
+            am  <- replaceBySampling(am)
+        }
+    }
+    return(am)
+}
+
+samplingwhenallmissing <- function(lst, uprot, rundf) {
+    dosampling <- function(m.replace, df) {
+        mode(m.replace) <- 'numeric'        
+
+        spl.size <- sum(is.na(m.replace))
+            
+        globalmin <- min(df[-1], na.rm=TRUE)
+        samplefrom <- seq(0.75 * globalmin, globalmin, length.out=50)
+        m.replace[is.na(m.replace)] <- as.numeric(sample(samplefrom, spl.size))
+        
+        return(m.replace)
+    }
+    dfp <- rundf[rundf$Prot == uprot, ]
+    mp <- as.matrix(dfp) # temporarily a matrix of characters
+    rownames(mp) <- sub('\\.[1-9]+', '', rownames(mp))
+    mp <- mp[!duplicated(rownames(mp)),, drop=FALSE]
+
+    isnull <- unlist(lapply(lst, is.null))
+    nix  <- which(isnull)
+
+    if(nix == 1) {
+        mp.sub <- mp[, 2:5, drop=FALSE]
+        mp.other <- mp[, 6:8, drop=FALSE]
+    } else {
+        mp.sub <- mp[, 6:8, drop=FALSE]
+        mp.other <- mp[, 2:5, drop=FALSE]
+    }
+    mp.sub <- dosampling(mp.sub, rundf)
+    mp.other <- dosampling(mp.other, rundf)
+    
+    if (nix == 1) return(list(mp.sub, mp.other))
+    else return(list(mp.other, mp.sub))
+}
+
+samplingwhenallmissing_usetype <- function(lst, uprot, rundf, arng) {
+    # arng: 2x2, 1x1
+    dosampling <- function(m.replace, df) {
+        mode(m.replace) <- 'numeric'        
+
+        spl.size <- sum(is.na(m.replace))
+            
+        globalmin <- min(df[-1], na.rm=TRUE)
+        samplefrom <- seq(0.75 * globalmin, globalmin, length.out=50)
+        m.replace[is.na(m.replace)] <- as.numeric(sample(samplefrom, spl.size))
+        
+        return(m.replace)
+    }
+    dfp <- rundf[rundf$Prot == uprot, ]
+    mp <- as.matrix(dfp) # temporarily a matrix of characters
+    rownames(mp) <- sub('\\.[1-9]+', '', rownames(mp))
+    mp <- mp[!duplicated(rownames(mp)),, drop=FALSE]
+
+    isnull <- unlist(lapply(lst, is.null))
+    nix  <- which(isnull)
+    
+    if(nix == 1) {
+        if (arng == '2x2') {
+            mp.sub <- mp[, grep('128|130', colnames(mp)), drop=FALSE]
+            mp.other <- mp[, grep('129|131', colnames(mp)), drop=FALSE]
+        } else {
+            mp.sub <- mp[, grep('128|129', colnames(mp)), drop=FALSE]
+            mp.other <- mp[, grep('130|131', colnames(mp)), drop=FALSE]
+        }
+    } else {
+        if (arng == '2x2') {
+            mp.other <- mp[, grep('128|130', colnames(mp)), drop=FALSE]
+            mp.sub <- mp[, grep('129|131', colnames(mp)), drop=FALSE]
+        } else {
+            mp.other <- mp[, grep('128|129', colnames(mp)), drop=FALSE]
+            mp.sub <- mp[, grep('130|131', colnames(mp)), drop=FALSE]
+        }
+    }
+    
+    mp.sub <- dosampling(mp.sub, rundf)
+    mp.other <- dosampling(mp.other, rundf)
+    
+    if (nix == 1) return(list(mp.sub, mp.other))
+    else return(list(mp.other, mp.sub))
+}
+
+samplingwhenmostmissing <- function(lst, uprot, rundf) {
+    dosampling <- function(mat, df) {
+        globalmin <- min(df[-1], na.rm=TRUE)
+        samplefrom <- seq(0.75 * globalmin, globalmin, length.out=20)
+        mat[is.na(mat)] <- as.numeric(sample(samplefrom, sum(is.na(mat))))
+        
+        return(mat)
+    }
+    xlst <- lapply(lst, function(m) {
+        if (any(is.na(m))) {
+            m <- dosampling(m, rundf)
+            return(m)
+        } else {
+            return(m)
+        }
+    })
+     
+    return(xlst)
+}
+
+@ 
+
+\end{document}

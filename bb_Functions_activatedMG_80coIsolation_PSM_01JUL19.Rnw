@@ -8,6 +8,16 @@
 \maketitle
 
 <<label=functions, echo=FALSE, eval=TRUE>>=
+.plot <- function(x,ttl=NULL) {
+  boxplot(exprs(x),
+          main=ifelse(is.null(ttl),processingData(x)@processing[2],ttl),
+          cex.main=.8,
+          cex.lab=0.5,
+          cex.axis=.9,
+          cex=0.7, las=2)
+  grid()
+}
+
 str2vect <- function(y, split, type='') {
     # split: eg ';'                                                                                                                                     
     # type: str, int, num                                                                                                                               
@@ -259,21 +269,15 @@ separate_PDPSM <- function(df, runix) {
     return(splt.lst)
 }
 
-# D062019 D112219 - temporary modified
 andMerge_PDPSM <- function(lst) {
     df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE), lst[1:2])
-    df <- aggregate(df[-1], df[1], max)
-    return(df)
-    df <- aggregate(. ~ df$PepSeq, data=df, max, na.action=na.omit)
-    df <- df[-1]
+    df <- aggregate(. ~ PepSeq, data=df, max, na.action=na.omit)
 
     n <- length(lst)
     for (i in seq(3, n)) {
         message(paste(' merging list element', i))
         df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
-        #df <- aggregate(df[-1], df[1], max)
-        df <- aggregate(. ~ df$PepSeq, data=df, max, na.action=na.omit)
-        df <- df[-1]
+        df <- aggregate(. ~ PepSeq, data=df, max, na.action=na.omit)
     }
     
     return(df)
@@ -289,6 +293,20 @@ andMerge_PDPSM_vSum <- function(lst) {
         message(paste(' merging list element', i))
         df <- Reduce(function(x, y)  merge(x, y, by='PepSeq', all=FALSE),  list(df, lst[[i]]))
         df <- aggregate(. ~ PepSeq, data=df, sum, na.action=na.omit) # D070319 modified max -> sum
+    }
+    
+    return(df)
+}
+
+andMerge_PDPSM_vUniprot <- function(lst) {
+    df <- Reduce(function(x, y)  merge(x, y, by='UniProt', all=FALSE), lst[1:2])
+    df <- aggregate(. ~ UniProt, data=df, max, na.action=na.omit)
+
+    n <- length(lst)
+    for (i in seq(3, n)) {
+        message(paste(' merging list element', i))
+        df <- Reduce(function(x, y)  merge(x, y, by='UniProt', all=FALSE),  list(df, lst[[i]]))
+        df <- aggregate(. ~ UniProt, data=df, sum, na.action=na.omit)
     }
     
     return(df)
@@ -326,6 +344,57 @@ prepPhenoData_PDPSM <- function(df, type, suff) {
         }
     })
 
+    write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
+
+    return(list(bm, fdf))
+}
+
+prepPhenoData_PDPSM_vUniProtAndMixed <- function(df, run1ix, type1, run2ix, type2, suff) {
+    # type: 4x4, 2x2
+    df$UniProt  <- make.unique(df$UniProt)
+    df <- df[order(df$UniProt, decreasing=FALSE), ]
+
+    fdf <- data.frame(ID=df$UniProt, Acc=df$UniProt)
+    rownames(fdf) <- fdf$ID
+
+    rownames(df) <- df$UniProt
+    bm <- df[-1]
+    bm[colnames(bm)] <- sapply(bm[colnames(bm)], as.numeric)
+    bm  <-  as.matrix(bm)
+    
+    setPheno <- function(type) {
+        if (type == '4x4') {
+            pat0 <- paste(c('128', '129'), collapse='|')
+            pat1 <- paste(c('130', '131'), collapse='|')
+        } else if (type == '2x2') {
+            pat0 <- paste(c('128', '130'), collapse='|')
+            pat1 <- paste(c('129', '131'), collapse='|')
+        } else if (type == '1x1') {
+            pat0 <- 'N'
+            pat1 <- 'C'
+        }
+        
+        return(list(pat0, pat1))
+    }
+    
+    patA.lst <- setPheno(type1)
+    bmA.cnames <- sapply(colnames(bm[, run1ix]), function(x) {
+        if (grepl(patA.lst[[1]], x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(patA.lst[[2]], x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+    patB.lst <- setPheno(type2)
+    bmB.cnames <- sapply(colnames(bm[, run2ix]), function(x) {
+        if (grepl(patB.lst[[1]], x)) {
+            x <- paste(x, '0', sep=',')
+        } else if (grepl(patB.lst[[2]], x)) {
+            x <- paste(x, '1', sep=',')
+        }
+    })
+    
+    bm.cnames <- c(bmA.cnames, bmB.cnames)
     write.table(bm.cnames, file=paste('pData_', suff, '.txt', sep=''), col.names='TreatmentGroup', row.names=FALSE, quote=FALSE, sep='\t')
 
     return(list(bm, fdf))
@@ -443,6 +512,121 @@ prepareData_TS_PDPSM_v0 <- function(df, peptix, fileIDix, isolinterfix, startix,
     
     return(df)
 }
+
+prepareData_TS_PDPSM_mod012920 <- function(df, peptix, fileIDix, isolinterfix, lessperc, startix, endix, rmchannel) { # TS: Targeted and SCOPED
+    # rmchannel: char vector of channels to remove
+    # lessperc: float for setting coisolation interference threshold
+    filterIsolationInterference <- function(adf, ix, perc) {
+        # D040219 - remove rows with missing interference percentage
+        perc <- as.numeric(perc)
+        ix <- as.integer(ix)
+        isolinterf <- adf[, ix]
+        adf <- adf[isolinterf < perc & !is.na(isolinterf), ]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v0 <- function(adf, carrier, empty) {
+        cix <- grep(paste(carrier, empty, sep='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v1 <- function(adf, carrierORempty, ...) {
+        alst <- list(...)
+        carrierORempty <- c(carrierORempty, unlist(alst))
+        cix <- grep(paste(carrierORempty, collapse='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels <- function(adf, removechannel) {
+        cix <- grep(paste(removechannel, collapse='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    rmEmptyRows <- function(df) {
+        emptyrows <- apply(df, 1, function(x) all(is.na(x)))
+        
+        return(df[!emptyrows, ])
+    }
+    cleanColumnNames <- function(df) {
+        cn  <-  colnames(df)
+        cn <- sub('Abundance\\.\\.', '_', colnames(df))
+        colnames(df) <- cn
+        
+        return(df)
+    }
+    df <- cleanColumnNames(df) 
+    df <- filterIsolationInterference(df, isolinterfix, lessperc)
+
+    peptix <- as.integer(peptix)
+    fileIDix <- as.integer(fileIDix)
+    startix <- as.integer(startix)
+    endix <- as.integer(endix)
+    df <- df[, c(peptix, fileIDix, startix:endix)]    
+    
+    df <- filterCarrierEmptyChannels(df, rmchannel)
+    
+    colnames(df)[1] <- 'PepSeq'
+    
+    return(df)
+}
+
+prepareData_TS_PDPSM_mod041120 <- function(df, peptix, fileIDix, isolinterfix, lessperc, startix, endix, rmchannel=NULL) { # TS: Targeted and SCOPED
+    # rmchannel: char vector of channels to remove
+    # lessperc: float for setting coisolation interference threshold
+    filterIsolationInterference <- function(adf, ix, perc) {
+        # D040219 - remove rows with missing interference percentage
+        perc <- as.numeric(perc)
+        ix <- as.integer(ix)
+        isolinterf <- adf[, ix]
+        adf <- adf[isolinterf < perc & !is.na(isolinterf), ]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v0 <- function(adf, carrier, empty) {
+        cix <- grep(paste(carrier, empty, sep='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels_v1 <- function(adf, carrierORempty, ...) {
+        alst <- list(...)
+        carrierORempty <- c(carrierORempty, unlist(alst))
+        cix <- grep(paste(carrierORempty, collapse='|'), colnames(adf))
+        adf <- adf[, -cix]
+        return(adf)
+    }
+    filterCarrierEmptyChannels <- function(adf, removechannel) {
+        if (!is.null(removechannel)) {
+            cix <- grep(paste(removechannel, collapse='|'), colnames(adf))
+            adf <- adf[, -cix]
+        }
+        return(adf)
+    }
+    rmEmptyRows <- function(df) {
+        emptyrows <- apply(df, 1, function(x) all(is.na(x)))
+        
+        return(df[!emptyrows, ])
+    }
+    cleanColumnNames <- function(df) {
+        cn  <-  colnames(df)
+        cn <- sub('Abundance\\.\\.', '_', colnames(df))
+        colnames(df) <- cn
+        
+        return(df)
+    }
+    df <- cleanColumnNames(df) 
+    df <- filterIsolationInterference(df, isolinterfix, lessperc)
+
+    peptix <- as.integer(peptix)
+    fileIDix <- as.integer(fileIDix)
+    startix <- as.integer(startix)
+    endix <- as.integer(endix)
+    df <- df[, c(peptix, fileIDix, startix:endix)]    
+    
+    df <- filterCarrierEmptyChannels(df, rmchannel)
+    
+    colnames(df)[1] <- 'PepSeq'
+    
+    return(df)
+}
+
 
 ################### unknow types or random ###############################################################
 
@@ -669,7 +853,7 @@ plotPCA_sc_v2 <- function(m, pdat, component, title='') { # select components
 
     spl <- df$Samples
     cl <- pdat[match(spl, names(pdat))]
-    spl <- ifelse(cl==1, 'Young', 'Old')
+    spl <- ifelse(cl==1, 'actMG young', 'actMG old')
     df$Samples <- spl
 
     if (component=='1') { 
@@ -870,6 +1054,27 @@ rmRunZeroMissing <- function(df, rmix, ...) {
     return(xdf)
 }
 
+removeVar <- function(mses, fnum) {
+    # fnum: integer, num factors to remove
+    fnum <- as.integer(fnum)
+
+    dsgn <- model.matrix(~ 0+factor(pData(mses)$TreatmentGroup))
+    colnames(dsgn) <- c('Jurkat', 'Jurkat+PMA')
+
+    fit <- lmFit(mses, dsgn)
+    residuals.m <- residuals.MArrayLM(fit, exprs(mses))
+    e <- exprs(mses)
+    te <- t(e)
+    E <- t(residuals.m)
+    svdWa <- svd(E)
+    W <- svdWa$u[, fnum]
+    alpha <- solve(t(W) %*% W) %*% t(W) %*% te
+    cY <- te - W %*% alpha
+    cY <- t(cY)
+
+    return(cY)
+}
+
 prepDEdata <- function(rots, plate.cb, mss) {
     df1 <- as.data.frame(myROTSsummary(rots, fdr=1))
     df1$Uniprot <- as.character(unlist(mget(rownames(df1), psmMkNames2uniprotAMG, ifnotfound=rownames(df1))))
@@ -895,6 +1100,61 @@ prepDEdata <- function(rots, plate.cb, mss) {
     return(final.df[-7])
 }
 
+prepDEdata_mod052220 <- function(rots, plate.cb, mss, toUP, toSym, fdr=0.1) {
+    fdr <- as.numeric(fdr)
+    df1 <- as.data.frame(myROTSsummary(rots, fdr=1))
+    df1$Uniprot <- as.character(unlist(mget(rownames(df1), toUP, ifnotfound=rownames(df1))))
+    df01 <- df1[df1$FDR <= fdr, ]
+    df01$Symbol <- as.character(unlist(mget(df01$Uniprot, toSym, ifnotfound=df01$Uniprot)))
+    df01 <- df01[-c(1, 2)]
+
+    deP13.df <- plate.cb[rownames(plate.cb) %in% rownames(df01), ]
+    pd <- phenoData(mss)$TreatmentGroup
+    a <- apply(deP13.df, 1, function(x) {
+        ym <- inv.glog2(mean(x[which(pd==0)]))
+        om <- inv.glog2(mean(x[which(pd==1)]))
+        return(ym/om)
+    })
+    
+    a.df <- as.data.frame(a)
+
+    final.df <- merge(df01, a.df, by=0)
+    final.df$invGLOG <- inv.glog2(final.df$logFC)
+    final.df <- final.df[-1]
+    colnames(final.df)  <- c('pvalue', 'FDR', 'logFC', 'Uniprot', 'Symbol', 'FC', 'FCx')
+    
+    return(final.df[-7])
+}
+
+prepDEdata_mod061220 <- function(rots, plate.cb, mss, toUP, toSym, fdr=0.1) {
+    fdr <- as.numeric(fdr)
+    df1 <- as.data.frame(myROTSsummary(rots, fdr=1))
+    df1 <- merge(df1, plate.cb, by=0)
+    rownames(df1) <- df1$Row.names
+    df1 <- df1[-c(1, 2)]
+
+    df1$Uniprot <- as.character(unlist(mget(rownames(df1), toUP, ifnotfound=rownames(df1))))
+    df01 <- df1[df1$FDR <= fdr, ]
+    df01$Symbol <- as.character(unlist(mget(df01$Uniprot, toSym, ifnotfound=df01$Uniprot)))
+
+    deP13.df <- plate.cb[rownames(plate.cb) %in% rownames(df01), ]
+    pd <- phenoData(mss)$TreatmentGroup
+    a <- apply(deP13.df, 1, function(x) {
+        ym <- inv.glog2(mean(x[which(pd==0)]))
+        om <- inv.glog2(mean(x[which(pd==1)]))
+        return(ym/om)
+    })
+    a.df <- as.data.frame(a)
+
+    final.df <- merge(df01, a.df, by=0)
+    final.df$invGLOG <- inv.glog2(final.df$logFC)
+    final.df <- final.df[-c(1, 2)]
+    final.df <- final.df[c(1:3, 88:91, 4:87)]
+    colnames(final.df)[1:7]  <- c('pvalue', 'FDR', 'logFC', 'Uniprot', 'Symbol', 'FC', 'FCx')
+    
+    return(final.df)
+}
+
 plotSIMLRclusters <- function(obj, main='') {
     # obj: SIMLR object
     col <- ifelse(obj$y$cluster==1, 'red', ifelse(obj$y$cluster==2, 'blue',
@@ -913,11 +1173,28 @@ plotSIMLRclusters <- function(obj, main='') {
     par(opar)
 }
 
+plotSIMLRclusters_nogrid <- function(obj, main='') {
+    # obj: SIMLR object
+    col <- ifelse(obj$y$cluster==1, 'red', ifelse(obj$y$cluster==2, 'blue',
+                                                     ifelse(obj$y$cluster==3, 'green',
+                                                     ifelse(obj$y$cluster==4, 'purple',
+                                                     ifelse(obj$y$cluster==5, 'magenta',
+                                                     ifelse(obj$y$cluster==6, 'turquoise',
+                                                     ifelse(obj$y$cluster==7, 'sienna',
+                                                     ifelse(obj$y$cluster==8, 'olivedrab',
+                                                     ifelse(obj$y$cluster==9, 'lightsteelblue1', 'black')))))))))
+    #'orchid', 'lavender', 'lawngreen', 'sienna'
+    #opar <- par(bg='grey80')
+    opar <- par(bg='grey90')
+    plot(obj$ydata, col=col, xlab = "SIMLR component 1", ylab = "SIMLR component 2", pch=20,  cex=0.7, main=main)
+    par(opar)
+}
+
 plotSIMLRclusters_groupmarked <- function(obj, pd, main='') {
     # obj: SIMLR object
     col <- ifelse(obj$y$cluster==1, 'red', ifelse(obj$y$cluster==2, 'blue',
                                                      ifelse(obj$y$cluster==3, 'green',
-                                                     ifelse(obj$y$cluster==4, 'sienna',
+                                                     ifelse(obj$y$cluster==4, 'purple', #'sienna',
                                                      ifelse(obj$y$cluster==5, 'magenta',
                                                      ifelse(obj$y$cluster==6, 'turquoise',
                                                      ifelse(obj$y$cluster==7, 'yellow',

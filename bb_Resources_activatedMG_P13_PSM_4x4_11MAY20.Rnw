@@ -1,0 +1,410 @@
+\documentclass[a4paper]{article}
+\usepackage{Sweave}
+\begin{document}
+
+\title{}
+\author{}
+
+\maketitle
+
+<<label=libraries, echo=FALSE, eval=TRUE>>=
+#library(plyr)
+library(MSnbase)
+library(reshape)
+library(lattice)
+library(ggplot2)
+library(limma)
+
+library(gplots)
+library(SIMLR)
+#library(Rtsne)
+
+#library(pcaMethods)
+library(ROTS)
+#library(VIM)
+
+#library(pheatmap)
+library(seqinr)
+library(sva)
+library(MKmisc) # inv.glog2
+
+options(editor="/usr/bin/vim")
+options(stringsAsFactors=FALSE)
+
+X11.options(width=4.5, height=4.5, xpos=1700, ypos=720)
+
+Sweave('bb_Functions_activatedMG_80coIsolation_PSM_01JUL19.Rnw')
+Sweave('bb_Functions_JU_additional_10JAN20.Rnw')
+
+load('~/Massspec/SINGLECELL/mMuniprot2gene.rda')
+
+#stop('STOP - initialize')
+
+<<label=loading, echo=FALSE, eval=FALSE>>=
+# D062419 load contaminants
+contaminants <- names(read.fasta('/n/microchem/minilims/Databases/Contaminants2Append.fasta', seqtype='AA'))
+contaminants <- as.character(sapply(contaminants, function(x) unlist(strsplit(x, split='\\|'))[2]))
+contaminants <- c(contaminants, 'Q5U405', 'P07477', 'ALBU_BOVIN', 'TRYP_PIG', 'uc', 'TRFE_HUMAN')
+contpat <- paste(contaminants, collapse='|')
+
+# load samples
+datfile <- '../Data/190207X_OldYoungMicroGlia_Plate13_PSM_Byonic_80CoIsol_testing.csv'
+xamgP13.df <- read.table(datfile, header=TRUE, quote='\"', sep='\t', comment.char='', check.names=TRUE)
+xamgP13.df <- xamgP13.df[!grepl(contpat, xamgP13.df$Protein.Accessions), ]
+
+# annotation
+annotP13.df <- xamgP13.df[, c(5, 9)] # 8:Master.Protein.Accessions 9:Protein.Accessions
+
+annotP13.df$Protein.Accessions <- sapply(annotP13.df$Protein.Accessions, function(x) gsub('; .*', '', x))
+annotP13.df$PeptMk <- make.names(annotP13.df$Annotated.Sequence, unique=FALSE) # proper!
+annotP13.df$PeptMkUq <- make.names(annotP13.df$Annotated.Sequence, unique=TRUE) # proper AND unique!
+
+colnames(annotP13.df) <- c('Pept', 'Acc', 'PeptMk', 'PeptMkUq')
+
+# lookup
+psm2upP13 <- new.env(hash=TRUE)
+apply(annotP13.df, 1, function(x) {
+    psm2upP13[[x[1]]] <- x[2]
+})
+
+psmMk2upP13 <- new.env(hash=TRUE)
+apply(annotP13.df, 1, function(x) {
+    psmMk2upP13[[x[3]]] <- x[2]
+})
+
+psmMkUq2upP13 <- new.env(hash=TRUE)
+apply(annotP13.df, 1, function(x) {
+    psmMkUq2upP13[[x[4]]] <- x[2]
+})
+
+stop('STOP - loading')
+
+@ 
+
+<<label=PLATE13, echo=FALSE, eval=FALSE>>=
+amgP13.df <- prepareData_TS_PDPSM_mod041120(xamgP13.df, 5, 29, 23, 70.0, 30, 40, c('126', '127', '129N'))
+
+message('... separate runs ...')
+xamgP13.lst <- separate_PDPSM(amgP13.df, 2)
+
+@ 
+
+<<label=temp, echo=FALSE, eval=TRUE>>=
+xlst <- lapply(xamgP13.lst, function(df) {
+    apply(df[-1], 2, function(x) {
+        (sum(is.na(x))/length(x)) * 100
+    })
+})
+
+xdf <- do.call(rbind, xlst)
+colnames(xdf) <- paste0('Channel', seq(7))
+rownames(xdf) <- paste0('Run', seq(12))
+mdf <- melt(xdf)
+
+library(lattice)
+
+pdf('Results/barchart_percent_missing_P13.pdf')
+barchart(value ~ X2|X1, data=mdf, main='Percent Missing Values Plate13')
+dev.off()
+
+stop('STOP - temp')
+
+@ 
+
+# add protein column
+amgP13.lst <- lapply(xamgP13.lst, function(df) {
+    df$Prot <- unlist(mget(df$PepSeq, psm2upP13, ifnotfound=df$PepSeq))
+    df$PepSeq <- make.names(df$PepSeq, unique=TRUE)
+    rownames(df) <- df$PepSeq
+    df <- df[-1]
+    df <- df[, c(ncol(df), seq(ncol(df)-1))]
+    o <- order(df$Prot)
+    df <- df[o, ]
+    return(df)
+})
+
+dobarplot <- TRUE
+if (dobarplot) {
+    orig <- par(mfrow=c(3, 4))
+    lapply(amgP13.lst, function(df) {
+        barplot(apply(df[-1], 2, sum, na.rm=TRUE), las=3, cex.names=0.8)
+    })
+    par(orig)
+}
+
+stop('STOP - processing')
+
+@ 
+<<label=fillNA, echo=FALSE, eval=FALSE>>=
+message('... loop over prot and sample missing ...')
+resamgP13.lst <- lapply(amgP13.lst, function(df) {
+    res <- sapply(unique(df$Prot), function(prot) {
+        message(paste('...', prot))
+        dfp <- df[df$Prot==prot, ]
+        
+        ## NULL when 90% values missing
+        m1 <- fillMissing_ixvector_mod041120(dfp, grep('128|129', colnames(dfp)), prot)
+        m2 <- fillMissing_ixvector_mod041120(dfp, grep('130|131', colnames(dfp)), prot)
+        
+        mlst <- list(m1, m2)
+        isnull <- unlist(lapply(mlst, is.null))
+        
+        hasmissing <- any(unlist(lapply(mlst, function(m) any(is.na(m)))))
+   
+        if (all(isnull)) {
+            return(NULL)
+        } else if (any(isnull)) {
+            nlst <- samplingwhenallmissing_usetype(mlst, prot, df, '4x4')
+            return(do.call(cbind, nlst))
+        } else if (hasmissing) {
+            nlst <- samplingwhenmostmissing(mlst, prot, df)
+            return(do.call(cbind, nlst))
+        } else {
+            return(cbind(m1, m2))
+        }
+    })
+
+    res <- Filter(Negate(is.null), res)
+    m <- do.call(rbind, res)
+    df <- as.data.frame(m)
+    df <- namerows(df, col.name='PepSeq')
+    ix <- which(grepl('PepSeq', colnames(df)))
+    df <- aggregate(df[-ix], df[ix], max)
+    return(df)
+
+})
+
+stop('STOP - filling')
+
+@ 
+<<fillNAcont, echo=FALSE, eval=FALSE>>=
+message('... and merge - aggregate by max ...')
+resamgP13.df <- justMerge_PDPSM(resamgP13.lst)
+
+pdamgP13.lst <- prepPhenoData_PDPSM_withlkup(resamgP13.df, '4x4', 'amgP13', psmMk2upP13)
+resamgP13.mss <- makeMSS_PDPSM_v1(pdamgP13.lst, 'amgP13')
+
+stop('STOP - processing')
+
+@ 
+
+<<label=singlerunnormalization, echo=FALSE, eval=FALSE>>=
+doBoxplot <- function(mss) {
+    lmss <- mss
+    e <- exprs(lmss)
+    exprs(lmss) <- log(e)
+    .plot(lmss)                 
+}
+
+plateRuns <- paste('F', seq(1, 12), '_', sep='')
+qresamgP13.mss <- normalizeSingleRuns(resamgP13.mss, plateRuns, type='quantiles')
+cresamgP13.mss <- normalizeSingleRuns(resamgP13.mss, plateRuns, type='center.mean')
+dresamgP13.mss <- normalizeSingleRuns(resamgP13.mss, plateRuns, type='diff.median')
+
+doBoxplot(resamgP13.mss)
+X11()
+doBoxplot(qresamgP13.mss)
+X11()
+doBoxplot(cresamgP13.mss)
+X11()
+doBoxplot(dresamgP13.mss)
+
+stop('STOP - single run normalization')
+
+@ 
+
+
+<<label=batch, echo=FALSE, eval=FALSE>>=
+doNormAndBatch <- function(mss) {
+    mss.vsn <- normalise(mss, 'vsn')
+    
+    pd <- phenoData(mss.vsn)$TreatmentGroup
+    names(pd) <- sampleNames(mss.vsn)
+    pd.df <- as.data.frame(pd)
+    batch <- as.integer(sub('F', '', sub('_.*', '', sampleNames(mss.vsn))))
+    pd.df$batch  <- batch
+
+    res.cb <- ComBat(exprs(mss.vsn), pd.df$batch)
+    res.cb <- rmCompPCA(res.cb, 1)
+    
+    return(list(pd, res.cb))
+}
+
+nresamgP13.lst <- doNormAndBatch(resamgP13.mss)
+nqresamgP13.lst <- doNormAndBatch(qresamgP13.mss)
+ncresamgP13.lst <- doNormAndBatch(cresamgP13.mss)
+ndresamgP13.lst <- doNormAndBatch(dresamgP13.mss)
+
+stop('STOP - batch and plot')
+
+@ 
+
+<<label=pcaplot, echo=FALSE, eval=FALSE>>=
+pd <- ndresamgP13.lst[[1]]
+cb <- ndresamgP13.lst[[2]]
+
+doplotwithoutlabel <- TRUE
+if (doplotwithoutlabel) {
+    p <- plotPCA_sc_v2(cb, pd, '1', title=paste('PCA Plot Activated Microglia Plate13 4x4', ''))    
+} else {
+    p <- plotPCA_sc_v1_labpts(cb, pd)
+}
+
+X11()
+plot(p)
+
+stop('STOP - pca')
+
+
+@ 
+
+<<label=PSMvariance, echo=FALSE, eval=FALSE>>=
+pd <- ndresamgP13.lst[[1]]
+cb <- ndresamgP13.lst[[2]]
+
+cb.df <- as.data.frame(cb)
+cb.df$Uniprot <- as.character(unlist(mget(rownames(cb.df), psmMk2upP13, ifnotfound=rownames(cb.df))))
+duplup <- cb.df$Uniprot[which(duplicated(cb.df$Uniprot))]
+cb.df <- cb.df[, c(85, 1:84)]
+cb.df <- cb.df[order(cb.df$Uniprot), ]
+dupl.df <- cb.df[cb.df$Uniprot %in% duplup, ]
+xcor.lst <- lapply(duplup, function(up) {
+    df <- cb.df[cb.df$Uniprot %in% up, ]
+    df <- df[-1]
+    m <- t(df)
+    cor(m)
+})
+
+xcor.lst <- lapply(xcor.lst, function(mat) mat[lower.tri(mat)])
+box.lst <- lapply(xcor.lst, boxplot, plot=FALSE)
+stats.lst <- lapply(box.lst, function(x) x$stats)
+box.m <- do.call(cbind, stats.lst)
+pdf('Results/dis_cor_duplicates_P13.pdf')
+boxplot(box.m, main='Activated MG Correlation Distribution\n of Duplicate Peptides', cex.main=0.9)
+dev.off()
+
+@ 
+
+<<label=ROTS, echo=FALSE, eval=FALSE>>=
+pd <- ndresamgP13.lst[[1]]
+cb <- ndresamgP13.lst[[2]]
+
+doROTS <- FALSE
+if (doROTS) {
+    resP13.ROTS <- ROTS(data=cb, groups=pd, B=100, K=500, seed=1234)
+}
+
+deresP13.df <- prepDEdata_mod061220(resP13.ROTS, cb, resamgP13.mss, psmMkUq2upP13, mMuniprot2gene, fdr=1)
+deresP13.df$pvalue <- format(deresP13.df$pvalue, scientific=TRUE)
+deresP13.df$FDR <- format(deresP13.df$FDR, scientific=TRUE)
+write.table(deresP13.df, file='Results/deTable_Plate13_reviewed.csv', quote=FALSE, sep='\t')
+deresP13.df$pvalue <- ifelse(as.numeric(deresP13.df$pvalue) == 0, rnorm(1, mean=5) * 1e-7, as.numeric(deresP13.df$pvalue))
+write.table(deresP13.df, file='Results/deTable_Plate13_reviewed_mkpvalnotnull.csv', quote=FALSE, sep='\t')
+
+xdeP13 <- summary.ROTS(resP13.ROTS, fdr=0.01)
+ydeP13 <- as.data.frame(myROTSsummary(resP13.ROTS, fdr=0.01))
+ydeP13$Uniprot <- as.character(unlist(mget(rownames(ydeP13), psmMk2upP13, ifnotfound=rownames(ydeP13))))
+ydeP13$Symbol <- as.character(unlist(mget(ydeP13$Uniprot, mMuniprot2gene, ifnotfound=ydeP13$Uniprot)))
+
+stop('STOP - ROTS')
+
+@ 
+<<label=protlist, echo=FALSE, eval=FALSE>>=
+y01DE <- myROTSsummary(resP13.ROTS, fdr=0.1)
+y1DE.df <- as.data.frame(myROTSsummary(resP13.ROTS, fdr=1))
+y1DE.df$Uniprot <- as.character(unlist(mget(rownames(y1DE.df), psmMkNames2uniprotAMG, ifnotfound=rownames(y1DE.df))))
+
+amg.DEup <- as.character(unlist(mget(rownames(xDE), psmMkNames2uniprotAMG, ifnotfound=rownames(xDE))))
+write.table(amg.DEup, 'Results/deProtein_actMG_P15.csv', quote=FALSE, sep='\t', row.names=FALSE, col.names=FALSE)
+amg.DEsym <- as.character(unlist(mget(amg.DEup, uniprotAMG2symbol, ifnotfound=amg.DEup)))
+write.table(amg.DEsym, 'Results/deNames_actMG_P15.csv', quote=FALSE, sep='\t', row.names=FALSE, col.names=FALSE)
+
+# volcano
+if(FALSE) {
+pval <- ifelse(y1DE.df$pvalue == 0.0, runif(1, min=1.0e-06, max=4.0e-05), y1DE.df$pvalue)
+plot(y1DE.df$logFC, -log(pval), pch=20, cex=1.2, xlab='log(FC)', ylab='-log(pval)', col='steelblue')
+text(y1DE.df$logFC, -log(pval), labels=y1DE.df$Symbol, pos='4', col='salmon', cex=0.6)
+}
+
+stop('STOP - ROTS DE')
+
+@
+<<label=volcano, echo=FALSE, eval=FALSE>>=
+p <- ggplot(y1DE.df,aes(x=logFC,y=-log(pvalue))) + geom_point(size=2, alpha=1, col='black')
+p <- p + labs(title='DE Proteins (red) Plate15', x='log(FC)', y='-log(pval)')
+p <- p + theme(plot.title=element_text(size=10, vjust=1, hjust=0.5), legend.position='none')
+
+p <- p + geom_point(data=yDE, stat='identity', col='red', size=2)
+p <- p + geom_text_repel(data=yDE, aes(x=logFC, y=-log(pvalue), label=yDE$Symbol), colour='forestgreen', size=2.5)
+
+#pdf('Results/volcano_P15.pdf')
+plot(p)
+#dev.off()
+
+stop('STOP - volcano')
+
+@ 
+
+% D051120
+<<label=combineplates, echo=FALSE, eval=FALSE>>=
+X11()
+venn(list(P13=ydeP13$Symbol, P14=ydeP14$Symbol, P15=ydeP15$Symbol))
+
+stop('STOP - venn')
+
+
+@ 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% SIMLR
+<<label=SIMLRclustering, echo=FALSE, eval=TRUE>>=
+pd <- ndresamgP13.lst[[1]]
+cb <- ndresamgP13.lst[[2]]
+
+if (FALSE) {
+    set.seed(123515)
+    res13cb515.simlr <- SIMLR(cb, 4)
+}
+
+#pdf('Results/simlr_activatedMG_Plate13.pdf')
+plotSIMLRclusters_nogrid(res13cb515.simlr, main='SIMLR actMG 84 Cells Plate13')
+#dev.off()
+
+# see label=ruvandpca
+#pd <- phenoData(res13vsn.mss)$TreatmentGroup
+
+pdf('Results/simlr_plate13_groupsmarked.pdf')
+plotSIMLRclusters_groupmarked(res13cb515.simlr, pd, main='SIMLR actMG 84 Cells Plate13')
+legend('left', c('young', 'old'), col='black', pch=c(20, 23))
+dev.off()
+
+stop('STOP - simlr')
+
+
+@ 
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% old code
+<<label=limmabatcheffect, echo=FALSE, eval=FALSE>>=
+mss <- res.mss
+
+pd <- phenoData(mss)$TreatmentGroup
+names(pd) <- sampleNames(mss)
+
+pd.df <- as.data.frame(pd)
+colnames(pd.df) <- 'TreatmentGroup'
+phenoData <- new('AnnotatedDataFrame', data=pd.df)
+mses <- ExpressionSet(assayData=exprs(mss), phenoData=phenoData)
+
+batch <- sub('_.*', '', sampleNames(mses))
+
+e.batch <- removeBatchEffect(mses, batch)
+
+p <- plotPCA_sc_v2(e.batch, pd, '1', title=paste('PCA Plot Activated Microglia', ''))
+plot(p)
+
+top('STOP - limma batch')
+
+#rmPComponentAndReconstruct <- function(X, rm=1)
+
+@ 
+\end{document}
