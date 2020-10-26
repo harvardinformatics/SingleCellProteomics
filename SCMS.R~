@@ -1,0 +1,203 @@
+readData <- function(file.xlsx) {
+    require(readxl)
+    require(stringr)
+
+    nms <- names(read_excel(file.xlsx, n_max=0))
+    datix <- which(grepl('Annotated Sequence|^Protein Accessions|File ID|Isolation Interference|Abundance', nms))
+    col_types_data <- ifelse(seq(length(nms)) %in% datix, 'guess', 'skip')
+    
+    dat.df <- as.data.frame(read_excel(file.xlsx, col_types=col_types_data))
+    colnames(dat.df) <- str_replace_all(colnames(dat.df), ' ', '')
+    rownames(dat.df) <- make.unique(dat.df$AnnotatedSequence, sep=';')
+    
+    dat.df <- dat.df[-grep('AnnotatedSequence', colnames(dat.df))]
+    dat.df$ProteinAccessions <- as.character(sapply(dat.df$'ProteinAccessions', function(s) unlist(strsplit(s, split='; '))[1]))
+
+    return(dat.df)
+}
+
+readAnnotation <- function(file.xlsx) {
+    require(readxl)
+    require(stringr)
+
+    nms <- names(read_excel(file.xlsx, n_max=0))
+    annotix <- which(grepl('Annotated Sequence|^Protein Accessions', nms))
+    col_types_annot <- ifelse(seq(length(nms)) %in% annotix, 'guess', 'skip')
+    
+    annot.df <- as.data.frame(read_excel(file.xlsx, col_types=col_types_annot))
+    colnames(annot.df) <- str_replace_all(colnames(annot.df), ' ', '')
+    annot.df$ProteinAccessions <- as.character(sapply(annot.df$'ProteinAccessions', function(s) unlist(strsplit(s, split='; '))[1]))
+    annot.df$uniqAnnotatedSequence <- make.unique(annot.df$AnnotatedSequence, sep=';')
+
+    return(annot.df)
+}
+
+#  prepareData_TS_PDPSM()
+filterIsolationInterference <- function(df, percent=70) {
+    percent <- as.numeric(percent)
+    ix <- which(grepl('IsolationInterference', colnames(df)))
+    isolationinterference <- df[, ix]
+    df <- df[isolationinterference < percent & !is.na(isolationinterference), ]
+    df[-ix]
+}
+
+filterChannels <- function(df, carrierORempty, ...) { # filterCarrierEmptyChannels
+    xlst <- list(...)
+    carrierORempty <- c(carrierORempty, unlist(xlst))
+    cix <- grep(paste(carrierORempty, collapse='|'), colnames(df))
+    df <- df[, -cix]
+}
+
+filterRows <- function(df) { # rmEmptyRows
+    emptyrows <- apply(df, 1, function(x) all(is.na(x)))
+    df[!emptyrows, ]
+}
+
+# separate_PDPSM()
+partitionMSruns <- function(df) { # separate_PDPSM
+    runix <- which(grepl('FileID', colnames(df)))
+    partition.lst <- split(df, factor(df[, runix, drop=TRUE]))
+
+    partition.lst <- lapply(partition.lst, function(xdf) {
+        prefix <- unique(xdf[, runix, drop=TRUE])
+        abundix <- which(grepl('Abundance:', colnames(xdf)))
+        colnames(xdf)[abundix] <- gsub('Abundance:', paste0(prefix, '_'), colnames(xdf)[abundix])
+        xdf <- xdf[-runix]
+    })
+}
+
+dat.df <- readData('190207X_OldYoungMicroGlia_Plate13_1-12_Fullplate_MouseDB_PSM.xlsx')
+annot.df <- readAnnotation('190207X_OldYoungMicroGlia_Plate13_1-12_Fullplate_MouseDB_PSM.xlsx')
+
+xdf <- filterIsolationInterference(dat.df)
+xdf <- filterChannels(xdf, 126, 127)
+xlst <- partitionMSruns(xdf)
+
+partitionProteins <- function(df) {
+    split(df, factor(df$ProteinAccessions))
+}
+
+ylst <- partitionProteins(xlst[[1]])
+ydf <- ylst$Q9WV54
+ydf <- ydf[-grep('ProteinAccessions', colnames(ydf))]
+zmL <- ydf[, 1:4]
+zmR <- ydf[, 5:8]
+
+extrapolateMissing <- function(df) {
+    # df is ctrl or treatment partial data.frame
+    if (!anyNA(df)) {
+        return(df)
+    } else if (nrow(df)  == 1) {
+        fillRowColumn(df)
+    }
+}
+
+fillRowColumn <- function(df) {
+    res <- apply(df, 1, function(v) {
+        if (sum(!is.na(v)) >= 2) {
+            sampleAndReplace(v)
+        } else {
+            v
+        }
+    })
+    return(t(res))
+}
+
+sampleAndReplace <- function(x) {
+    numbermissing <- sum(is.na(x))
+    mn <- mean(x[!is.na(x)])
+    stdev <- mn * 0.1
+    x[which(is.na(x))] <- rnorm(numbermissing, mean=mn, sd=stdev)
+    return(x)
+}
+    
+#############
+imputeMissing <- function(df, colxstart, colxend, prot) {
+    require(pcaMethods)
+    colxstart <- as.integer(colxstart)
+    colxend <- as.integer(colxend)
+    adf <- df[, colxstart:colxend]
+    am <- as.matrix(adf)
+    write.table(am, file='IntermRes/am_testing.txt', quote=FALSE, sep='\t')
+
+    message('              proc a.am')
+    am <- procProteinPSMs(am)
+    write.table(am, file='IntermRes/a.am_testing.txt', quote=FALSE, sep='\t')
+    message('              proc b.am')
+    am <- setRowZero(am)
+    write.table(am, file='IntermRes/b.am_testing.txt', quote=FALSE, sep='\t')
+    
+    return(am)
+}
+procProteinPSMs <- function(m) { # D070119
+    # make fillColWithMean() and fillRowWithAlmostFull() redundant
+    # using column means or row means to replace missing but only if enough abundance values to calculate mean
+    if (!anyNA(m)) return(m)
+
+    xpept <- unique(sub(';.*', '', rownames(m)))
+    pept <- gsub('.*\\]\\.', '', xpept)
+    pept <- gsub('\\[.*', '', pept)
+
+    alst <- lapply(pept, function(x) { # protein specific PSM matrix
+        df <- as.data.frame(m)
+        obj <- df[grep(x, rownames(df), fixed=TRUE), ]
+        obj <- as.matrix(obj)
+    })
+
+    blst <- lapply(alst, function(obj) {
+        mm <- as.matrix(obj)
+        if (anyNA(mm)) {
+            if (nrow(mm) == 1) {
+                mm <- rowReplaceMissingWithRandNorm(mm)
+                return(mm)
+            } else {
+                mm <- colReplaceMissingWithRandNorm(mm)
+                mm <- rowReplaceMissingWithRandNorm(mm)
+                return(mm)
+            }
+        } else {
+            return(mm)
+        }
+    })
+
+    return(do.call(rbind, blst))
+}
+
+colReplaceMissingWithRandNorm <- function(m) {
+    res <- apply(m, 2, function(x) {
+        if (sum(is.na(x)) < 0.5 * length(x)) {
+            numbermissing <- sum(is.na(x))
+            #x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=sd(x[!is.na(x)]))
+            x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=mean(x[!is.na(x)])/3)
+            return(x)
+        } else {
+            return(x)
+        }
+    })
+
+    return(res)
+}
+rowReplaceMissingWithRandNorm <- function(m) {
+    res <- apply(m, 1, function(x) {
+        if (sum(is.na(x)) < 0.5 * length(x)) {
+            numbermissing <- sum(is.na(x))
+            #x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=sd(x[!is.na(x)]))
+            x[which(is.na(x))] <- rnorm(numbermissing, mean=mean(x[!is.na(x)]), sd=mean(x[!is.na(x)])/3)
+            return(x)
+        } else {
+            return(x)
+        }
+    })
+
+    return(t(res))
+
+}
+
+
+
+
+
+
+
+
+
