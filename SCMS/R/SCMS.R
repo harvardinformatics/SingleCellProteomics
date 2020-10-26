@@ -64,42 +64,4 @@ partitionMSruns <- function(df) {
     })
 }
 
-partitionProteins <- function(df) {
-    split(df, factor(df$ProteinAccessions))
-}
-
-extrapolateMissing <- function(df) {
-    # df is ctrl or treatment partial data.frame
-    if (!anyNA(df)) {
-        return(df)
-    } else if (nrow(df)  == 1) {
-        fillRowColumn(df)
-    }
-}
-
-fillRowColumn <- function(df) {
-    res <- apply(df, 1, function(v) {
-        if (sum(!is.na(v)) >= 2) {
-            sampleAndReplace(v)
-        } else {
-            v
-        }
-    })
-    return(t(res))
-}
-
-sampleAndReplace <- function(x) {
-    numbermissing <- sum(is.na(x))
-    mn <- mean(x[!is.na(x)])
-    stdev <- mn * 0.1
-    x[which(is.na(x))] <- rnorm(numbermissing, mean=mn, sd=stdev)
-    return(x)
-}
-
-
-
-
-
-
-
 
