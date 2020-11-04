@@ -1,64 +1,66 @@
-normalizeSingleRuns <- function(mss, channels, type='quantiles') {
+normalizeData <- function(mss, byrun=TRUE, vsn=TRUE) {
     require(MSnbase)
+
+    if (byrun) {
+        channels <- do.call(rbind, strsplit(sampleNames(mss), split='_'))[, 1]
+        xlst <- sapply(channels, function(x) {
+            xms <- mss[, grep(paste0(x, '_'), sampleNames(mss))]
+            xms <- normalise(xms, 'quantiles',)
+            return(xms)
+        })
+        mss <- Reduce(function(x, y) combine(x, y), xlst)
+    }
+
+    if (vsn) {
+        mss <- normalise(mss, 'vsn')
+    }
     
-    xlst <- sapply(channels, function(x) {
-        xms <- mss[, grep(x, sampleNames(mss))]
-        xms <- normalise(xms, type)
-        return(xms)
-    })
-    
-    nmss <- Reduce(function(x, y) combine(x, y), xlst)
-    return(nmss)
+    return(mss)
 }
 
-doNormAndBatch <- function(mss) {
+correctBatch <- function(mss) {
     require(sva)
     
-    mss.vsn <- normalise(mss, 'vsn')
+    pheno <- pData(mss)
+    batch <- pheno$batch
+    edata <- exprs(mss)
+    combat.dat <- ComBat(edata, batch)
+    exprs(mss) <- combat.dat
     
-    pd <- phenoData(mss.vsn)$TreatmentGroup
-    names(pd) <- sampleNames(mss.vsn)
-    pd.df <- as.data.frame(pd)
-    batch <- as.integer(sub('F', '', sub('_.*', '', sampleNames(mss.vsn))))
-    pd.df$batch  <- batch
-
-    res.cb <- ComBat(exprs(mss.vsn), pd.df$batch)
-    res.cb <- rmCompPCA(res.cb, 1)
-    
-    return(list(pd, res.cb))
+    return(mss)
 }
 
-rmCompPCA <- function(X, rm=1) {
-    rm <- as.integer(rm)
+rmCompPCA <- function(mss, rmcomp=1) {
+    rmcomp <- as.integer(rmcomp)
+    X <- exprs(mss)
     
-    mu <- colMeans(X)
-
     Xpca <- prcomp(X)
-    rot <- Xpca$rotation
-    retx <- Xpca$x
+    loadings <- Xpca$rotation
+    scores <- Xpca$x
 
-    Xhat = retx[,seq(ncol(retx))[-rm]] %*% t(rot[,seq(ncol(rot))[-rm]])
+    mu <- colMeans(X)
+    Xhat = scores[,seq(ncol(scores))[-rmcomp]] %*% t(loadings[,seq(ncol(loadings))[-rmcomp]])
     Xhat = scale(Xhat, center = -mu, scale = FALSE)
+    exprs(mss) <- Xhat
     
-    return(Xhat)
+    return(mss)
 }
 
-removeVar <- function(mses, fnum) {
-    fnum <- as.integer(fnum)
+removeVar <- function(mss, numf) {
+    numf <- as.integer(numf)
 
-    dsgn <- model.matrix(~ 0+factor(pData(mses)$TreatmentGroup))
-    colnames(dsgn) <- c('A', 'B')
-
-    fit <- lmFit(mses, dsgn)
-    residuals.m <- residuals.MArrayLM(fit, exprs(mses))
-    e <- exprs(mses)
+    dsgn <- model.matrix(~ 0+factor(pData(mss)$TreatmentGroup))
+    fit <- lmFit(mss, dsgn)
+    residuals.m <- residuals.MArrayLM(fit, exprs(mss))
+    e <- exprs(mss)
     te <- t(e)
     E <- t(residuals.m)
     svdWa <- svd(E)
-    W <- svdWa$u[, fnum]
+    W <- svdWa$u[, numf]
     alpha <- solve(t(W) %*% W) %*% t(W) %*% te
     cY <- te - W %*% alpha
     cY <- t(cY)
-
-    return(cY)
+    exprs(mss) <- cY
+    
+    return(mss)
 }

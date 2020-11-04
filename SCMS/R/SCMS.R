@@ -37,9 +37,9 @@ makeMSnSet <- function(df) {
     features.df <- data.frame(ID=rownames(df), Acc=rownames(df))
     rownames(features.df) <- features.df$ID
 
-    pd <- sapply(colnames(testres), function(nm) ifelse(grepl(paste(c('128', '129'), collapse='|'), nm), '0', '1'))
-    phenoData <- as.data.frame(pd)
-    colnames(phenoData) <- 'TreatmentGroup'
+    group <- sapply(colnames(df), function(nm) ifelse(grepl(paste(c('128', '129'), collapse='|'), nm), '0', '1'))
+    batch <- do.call(rbind, strsplit(colnames(df), split='_'))[, 1]
+    phenoData <- data.frame(TreatmentGroup=group, batch=batch)
 
     MSnSet(as.matrix(df), features.df, phenoData)
 }
